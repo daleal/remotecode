@@ -1,0 +1,88 @@
+{
+  "lsp": {
+    "oxlint": {
+      "binary": {
+        "path": "bun",
+        "arguments": ["run", "oxlint", "--lsp"]
+      },
+      "initialization_options": {
+        "settings": {
+          "configPath": "./oxlint.config.ts"
+        }
+      }
+    },
+    "oxfmt": {
+      "binary": {
+        "path": "bun",
+        "arguments": ["run", "oxfmt", "--lsp"]
+      },
+      "initialization_options": {
+        "settings": {
+          "fmt.configPath": "./oxfmt.config.ts"
+        }
+      }
+    }
+  },
+  "languages": {
+    "JavaScript": {
+      "formatter": [
+        {
+          "language_server": {
+            "name": "oxfmt"
+          }
+        },
+        {
+          "code_action": "source.fixAll.oxc"
+        }
+      ]
+    },
+    "TypeScript": {
+      "formatter": [
+        {
+          "language_server": {
+            "name": "oxfmt"
+          }
+        },
+        {
+          "code_action": "source.fixAll.oxc"
+        }
+      ]
+    },
+    "TSX": {
+      "formatter": [
+        {
+          "language_server": {
+            "name": "oxfmt"
+          }
+        },
+        {
+          "code_action": "source.fixAll.oxc"
+        }
+      ]
+    },
+    "JSON": {
+      "formatter": [
+        {
+          "language_server": {
+            "name": "oxfmt"
+          }
+        },
+        {
+          "code_action": "source.fixAll.oxc"
+        }
+      ]
+    },
+    "JSONC": {
+      "formatter": [
+        {
+          "language_server": {
+            "name": "oxfmt"
+          }
+        },
+        {
+          "code_action": "source.fixAll.oxc"
+        }
+      ]
+    }
+  }
+}

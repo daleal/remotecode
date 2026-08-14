@@ -1,0 +1,22 @@
+{
+  "name": "remotecode",
+  "private": true,
+  "type": "module",
+  "module": "index.ts",
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "lint": "oxlint",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@daleal/oxd-config-ts": "^0.1.0",
+    "@types/bun": "latest",
+    "oxfmt": "^0.63.0",
+    "oxlint": "^1.78.0"
+  },
+  "peerDependencies": {
+    "typescript": "^7.0.2"
+  }
+}
