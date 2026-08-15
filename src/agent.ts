@@ -19,6 +19,21 @@ interface CreateAgentOptions {
   workspaceForThread?: typeof createThreadWorkspace;
 }
 
+interface ProcessMentionOptions {
+  client: OpenCodeClient;
+  config: OpenCodeConfig;
+  directory: string;
+  thread: Thread<ThreadState>;
+  triggeringMessage: Message;
+  userTimezone?: (userId: string) => Promise<string | undefined>;
+}
+
+interface ReactionOptions {
+  emoji: string;
+  messageID: string;
+  thread: Thread<ThreadState>;
+}
+
 const TITLE_PROMPT = `You are a title generator. You output ONLY a thread title. Nothing else.
 
 <task>
@@ -79,58 +94,68 @@ export const createAgent = (options: CreateAgentOptions) => {
   bot.onNewMention(async (thread, message) => {
     if (!options.allowedUsers.includes(message.author.userId)) return;
 
-    try {
-      await thread.adapter.addReaction(thread.id, message.id, 'eyes');
-    } catch (error) {
-      console.error('Could not add processing reaction', error);
-    }
+    let processingReaction = 'gear';
+    await addReaction({ emoji: processingReaction, messageID: message.id, thread });
 
     let outcome = 'white_check_mark';
     try {
-      const response = await processMention(
-        options.openCode,
-        options.config,
+      const workspaceForThread = options.workspaceForThread ?? createThreadWorkspace;
+      const directory = await workspaceForThread({
+        adapter: thread.adapter.name,
+        client: options.openCode,
+        repositoryRoot: options.config.reposRoot,
+        threadID: thread.id,
+        workspaceRoot: options.config.workspaceRoot,
+      });
+      await removeReaction({ emoji: processingReaction, messageID: message.id, thread });
+      processingReaction = 'eyes';
+      await addReaction({ emoji: processingReaction, messageID: message.id, thread });
+
+      const response = await processMention({
+        client: options.openCode,
+        config: options.config,
+        directory,
         thread,
-        message,
-        options.userTimezone,
-        options.workspaceForThread,
-      );
+        triggeringMessage: message,
+        userTimezone: options.userTimezone,
+      });
       await thread.post(response);
     } catch (error) {
       console.error(error);
       outcome = 'x';
     }
 
-    try {
-      await thread.adapter.removeReaction(thread.id, message.id, 'eyes');
-    } catch (error) {
-      console.error('Could not remove processing reaction', error);
-    }
-    try {
-      await thread.adapter.addReaction(thread.id, message.id, outcome);
-    } catch (error) {
-      console.error('Could not add outcome reaction', error);
-    }
+    await removeReaction({ emoji: processingReaction, messageID: message.id, thread });
+    await addReaction({ emoji: outcome, messageID: message.id, thread });
   });
 
   return bot;
 };
 
-export const processMention = async (
-  client: OpenCodeClient,
-  config: OpenCodeConfig,
-  thread: Thread<ThreadState>,
-  triggeringMessage: Message,
-  userTimezone?: (userId: string) => Promise<string | undefined>,
-  workspaceForThread = createThreadWorkspace,
-) => {
-  const directory = await workspaceForThread(
-    client,
-    config.reposRoot,
-    config.workspaceRoot,
-    thread.adapter.name,
-    thread.id,
-  );
+const addReaction = async ({ emoji, messageID, thread }: ReactionOptions) => {
+  try {
+    await thread.adapter.addReaction(thread.id, messageID, emoji);
+  } catch (error) {
+    console.error(`Could not add ${emoji} reaction`, error);
+  }
+};
+
+const removeReaction = async ({ emoji, messageID, thread }: ReactionOptions) => {
+  try {
+    await thread.adapter.removeReaction(thread.id, messageID, emoji);
+  } catch (error) {
+    console.error(`Could not remove ${emoji} reaction`, error);
+  }
+};
+
+export const processMention = async ({
+  client,
+  config,
+  directory,
+  thread,
+  triggeringMessage,
+  userTimezone,
+}: ProcessMentionOptions) => {
   const state = await thread.state;
   const recovered = state?.sessionID
     ? { id: state.sessionID, lastMessageID: state.lastMessageID }

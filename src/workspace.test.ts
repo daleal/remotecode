@@ -22,7 +22,13 @@ describe('createThreadWorkspace', () => {
     } as unknown as OpenCodeClient;
 
     await expect(
-      createThreadWorkspace(client, '~/repos', '~/remotecode', 'slack', 'thread-1'),
+      createThreadWorkspace({
+        adapter: 'slack',
+        client,
+        repositoryRoot: '~/repos',
+        threadID: 'thread-1',
+        workspaceRoot: '~/remotecode',
+      }),
     ).resolves.toBe('/srv/remote/sessions/abc');
     expect(client.shell.create).toHaveBeenCalledWith({
       command: expect.stringContaining("'~/repos' '~/remotecode'"),

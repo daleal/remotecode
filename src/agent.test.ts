@@ -66,7 +66,7 @@ describe('Slack agent', () => {
       state: createMemoryState(),
       userTimezone: async () => 'Europe/Madrid',
       userName: 'remotecode',
-      workspaceForThread: async (_client, directory) => directory,
+      workspaceForThread: async ({ repositoryRoot }) => repositoryRoot,
     });
     bots.push(bot);
     await bot.initialize();
@@ -89,12 +89,19 @@ describe('Slack agent', () => {
     expect(prompts[1]?.text).toContain('new context');
     expect(prompts[1]?.text).toContain('second request');
     expect(adapter.reactions.map((reaction) => reaction.emoji)).toEqual([
+      'gear',
       'eyes',
       'white_check_mark',
+      'gear',
       'eyes',
       'white_check_mark',
     ]);
-    expect(adapter.removedReactions.map((reaction) => reaction.emoji)).toEqual(['eyes', 'eyes']);
+    expect(adapter.removedReactions.map((reaction) => reaction.emoji)).toEqual([
+      'gear',
+      'eyes',
+      'gear',
+      'eyes',
+    ]);
     expect(adapter.outputs).toEqual(['response 1', 'response 2']);
     expect(listMessages.mock.calls.some(([input]) => input.cursor === 'next-page')).toBe(true);
     expect(client.generate.text).toHaveBeenCalledWith({
@@ -133,7 +140,7 @@ describe('Slack agent', () => {
       openCode: client,
       state: createMemoryState(),
       userName: 'remotecode',
-      workspaceForThread: async (_client, directory) => directory,
+      workspaceForThread: async ({ repositoryRoot }) => repositoryRoot,
     });
     bots.push(bot);
     await bot.initialize();
@@ -141,9 +148,38 @@ describe('Slack agent', () => {
     await adapter.receive('one', 'fail');
 
     expect(adapter.outputs).toEqual([]);
-    expect(adapter.reactions.map((reaction) => reaction.emoji)).toEqual(['eyes', 'x']);
-    expect(adapter.removedReactions.map((reaction) => reaction.emoji)).toEqual(['eyes']);
+    expect(adapter.reactions.map((reaction) => reaction.emoji)).toEqual(['gear', 'eyes', 'x']);
+    expect(adapter.removedReactions.map((reaction) => reaction.emoji)).toEqual(['gear', 'eyes']);
     expect(errorLog).toHaveBeenCalledWith(expect.objectContaining({ message: 'private failure' }));
+  });
+
+  it('replaces the setup reaction with an error when workspace provisioning fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const adapter = new MockAdapter('remotecode');
+    const bot = createAgent({
+      adapters: { mock: adapter },
+      allowedUsers: ['local-user'],
+      config: {
+        agent: 'build',
+        model: { id: 'model', providerID: 'provider', variant: 'high' },
+        reposRoot: '/tmp',
+        smallModel: { id: 'small-model', providerID: 'provider' },
+        workspaceRoot: '/tmp/workspaces',
+      },
+      openCode: {} as OpenCodeClient,
+      state: createMemoryState(),
+      userName: 'remotecode',
+      workspaceForThread: async () => {
+        throw new Error('workspace failure');
+      },
+    });
+    bots.push(bot);
+    await bot.initialize();
+
+    await adapter.receive('one', 'fail');
+
+    expect(adapter.reactions.map((reaction) => reaction.emoji)).toEqual(['gear', 'x']);
+    expect(adapter.removedReactions.map((reaction) => reaction.emoji)).toEqual(['gear']);
   });
 
   it('ignores mentions from users outside the allowlist', async () => {
@@ -164,7 +200,7 @@ describe('Slack agent', () => {
       openCode: client,
       state: createMemoryState(),
       userName: 'remotecode',
-      workspaceForThread: async (_client, directory) => directory,
+      workspaceForThread: async ({ repositoryRoot }) => repositoryRoot,
     });
     bots.push(bot);
     await bot.initialize();
