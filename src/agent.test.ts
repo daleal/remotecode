@@ -103,6 +103,12 @@ describe('Slack agent', () => {
       'eyes',
     ]);
     expect(adapter.outputs).toEqual(['response 1', 'response 2']);
+    expect(adapter.ephemeralOutputs).toEqual([
+      {
+        text: "To inspect this session locally, run:\n\n```\nopencode --session 'session-1'\n```",
+        userId: 'local-user',
+      },
+    ]);
     expect(listMessages.mock.calls.some(([input]) => input.cursor === 'next-page')).toBe(true);
     expect(client.generate.text).toHaveBeenCalledWith({
       location: { directory: '/tmp' },

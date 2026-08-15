@@ -171,6 +171,13 @@ export const processMention = async ({
       });
 
   await thread.setState({ sessionID: session.id });
+  if (!recovered) {
+    await sendSessionInstructions({
+      sessionID: session.id,
+      thread,
+      userID: triggeringMessage.author.userId,
+    });
+  }
 
   const messages = await messagesSince(thread, recovered?.lastMessageID);
   if (!messages.some((item) => item.id === triggeringMessage.id)) {
@@ -233,6 +240,26 @@ export const processMention = async ({
   }
 
   return replies.join('\n\n');
+};
+
+const sendSessionInstructions = async ({
+  sessionID,
+  thread,
+  userID,
+}: {
+  sessionID: string;
+  thread: Thread<ThreadState>;
+  userID: string;
+}) => {
+  try {
+    await thread.postEphemeral(
+      userID,
+      `To inspect this session locally, run:\n\n\`\`\`\nopencode --session '${sessionID}'\n\`\`\``,
+      { fallbackToDM: false },
+    );
+  } catch (error) {
+    console.error('Could not post session instructions', error);
+  }
 };
 
 const recoverSession = async (

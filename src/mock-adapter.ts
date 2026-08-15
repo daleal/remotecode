@@ -5,6 +5,7 @@ import {
   type Adapter,
   type AdapterPostableMessage,
   type ChatInstance,
+  type EphemeralMessage,
   type FetchOptions,
   type FormattedContent,
   type RawMessage,
@@ -29,6 +30,7 @@ export class MockAdapter implements Adapter<MockThreadID, MockRawMessage> {
   readonly name = 'mock';
   readonly userName: string;
   readonly botUserId = 'mock-bot';
+  readonly ephemeralOutputs: Array<{ text: string; userId: string }> = [];
   readonly outputs: string[] = [];
   readonly reactions: Array<{ emoji: string; messageId: string }> = [];
   readonly removedReactions: Array<{ emoji: string; messageId: string }> = [];
@@ -125,6 +127,16 @@ export class MockAdapter implements Adapter<MockThreadID, MockRawMessage> {
     this.outputs.push(message.text);
     console.log(`\n${this.userName}: ${message.text}\n`);
     return this.raw(message);
+  }
+
+  async postEphemeral(
+    threadId: string,
+    userId: string,
+    post: AdapterPostableMessage,
+  ): Promise<EphemeralMessage<MockRawMessage>> {
+    const message = this.makeMessage(threadId, postableText(post), true);
+    this.ephemeralOutputs.push({ text: message.text, userId });
+    return { id: message.id, raw: message.raw, threadId, usedFallback: false };
   }
 
   renderFormatted(content: FormattedContent) {
