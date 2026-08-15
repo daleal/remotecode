@@ -3,3 +3,5 @@ services:
     build: .
     command: bun run start
     network_mode: host
+    env_file:
+      - stack.env
