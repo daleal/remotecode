@@ -5,6 +5,7 @@ const envSchema = zod.object({
   SLACK_BOT_TOKEN: zod.string(),
   SLACK_APP_TOKEN: zod.string(),
   SLACK_BOT_NAME: zod.string().optional().default('remotecode'),
+
   ALLOWED_SLACK_USERS: zod
     .string()
     .optional()
@@ -17,6 +18,7 @@ const envSchema = zod.object({
     ),
   REPOS_ROOT: zod.string().optional().default('~/repos'),
   WORKSPACE_ROOT: zod.string().optional().default('~/remotecode'),
+
   OPENCODE_URL: zod.url().optional().default('http://127.0.0.1:4096'),
   OPENCODE_AGENT: zod.string().optional().default('build'),
   OPENCODE_MODEL: modelSchema.optional().default({ providerID: 'openai', id: 'gpt-5.6-sol' }),
