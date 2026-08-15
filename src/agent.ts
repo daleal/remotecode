@@ -117,14 +117,14 @@ export const processMention = async (
   await client.session.wait({ sessionID: session.id });
 
   const result = await newAssistantMessages(client, session.id, previousAssistantIDs);
-  const replies = result
-    .flatMap((item) => item.content)
+  const finalMessage = result.at(-1);
+  const replies = (finalMessage?.content ?? [])
     .filter((part) => part.type === 'text')
     .map((part) => part.text.trim())
     .filter(Boolean);
 
   if (replies.length === 0) {
-    const failure = result.find((item) => item.error);
+    const failure = result.findLast((item) => item.error);
     throw new Error(failure?.error?.message ?? 'OpenCode returned no text');
   }
 

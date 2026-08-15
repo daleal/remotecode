@@ -35,6 +35,11 @@ describe('Slack agent', () => {
           messages.push(
             { id: `user-${prompts.length}`, metadata: input.metadata, type: 'user' },
             {
+              content: [{ text: `intermediate ${prompts.length}`, type: 'text' }],
+              id: `assistant-intermediate-${prompts.length}`,
+              type: 'assistant',
+            },
+            {
               content: [{ text: `response ${prompts.length}`, type: 'text' }],
               id: `assistant-${prompts.length}`,
               type: 'assistant',
@@ -47,7 +52,7 @@ describe('Slack agent', () => {
     const adapter = new MockAdapter('remotecode');
     const bot = createAgent({
       adapters: { mock: adapter },
-      allowedSlackUsers: ['local-user'],
+      allowedUsers: ['local-user'],
       config: {
         agent: 'build',
         directory: '/tmp',
@@ -73,7 +78,7 @@ describe('Slack agent', () => {
     expect(prompts[0]?.text).toContain('first request');
     expect(prompts[0]?.text).toContain('Slack message from Local User (@local) at');
     expect(prompts[0]?.text).toContain('Slack message from Local User (@local, bot) at');
-    expect(prompts[0]?.text).toContain('Z (user timezone: Europe/Madrid)');
+    expect(prompts[0]?.text).toContain('Z (timezone: Europe/Madrid)');
     expect(prompts[1]?.text).not.toContain('background context');
     expect(prompts[1]?.text).not.toContain('first request');
     expect(prompts[1]?.text).toContain('new context');
@@ -103,7 +108,7 @@ describe('Slack agent', () => {
     const adapter = new MockAdapter('remotecode');
     const bot = createAgent({
       adapters: { mock: adapter },
-      allowedSlackUsers: ['local-user'],
+      allowedUsers: ['local-user'],
       config: {
         agent: 'build',
         directory: '/tmp',
@@ -131,7 +136,7 @@ describe('Slack agent', () => {
     const adapter = new MockAdapter('remotecode');
     const bot = createAgent({
       adapters: { mock: adapter },
-      allowedSlackUsers: [],
+      allowedUsers: [],
       config: {
         agent: 'build',
         directory: '/tmp',
