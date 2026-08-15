@@ -92,14 +92,12 @@ describe('Slack agent', () => {
       'gear',
       'eyes',
       'white_check_mark',
-      'gear',
       'eyes',
       'white_check_mark',
     ]);
     expect(adapter.removedReactions.map((reaction) => reaction.emoji)).toEqual([
       'gear',
       'eyes',
-      'gear',
       'eyes',
     ]);
     expect(adapter.outputs).toEqual(['response 1', 'response 2']);

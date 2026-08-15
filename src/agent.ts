@@ -94,7 +94,8 @@ export const createAgent = (options: CreateAgentOptions) => {
   bot.onNewMention(async (thread, message) => {
     if (!options.allowedUsers.includes(message.author.userId)) return;
 
-    let processingReaction = 'gear';
+    const hasSession = Boolean((await thread.state)?.sessionID);
+    let processingReaction = hasSession ? 'eyes' : 'gear';
     await addReaction({ emoji: processingReaction, messageID: message.id, thread });
 
     let outcome = 'white_check_mark';
@@ -107,9 +108,11 @@ export const createAgent = (options: CreateAgentOptions) => {
         threadID: thread.id,
         workspaceRoot: options.config.workspaceRoot,
       });
-      await removeReaction({ emoji: processingReaction, messageID: message.id, thread });
-      processingReaction = 'eyes';
-      await addReaction({ emoji: processingReaction, messageID: message.id, thread });
+      if (!hasSession) {
+        await removeReaction({ emoji: processingReaction, messageID: message.id, thread });
+        processingReaction = 'eyes';
+        await addReaction({ emoji: processingReaction, messageID: message.id, thread });
+      }
 
       const response = await processMention({
         client: options.openCode,
