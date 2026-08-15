@@ -121,10 +121,9 @@ export const processMention = async (
   userTimezone?: (userId: string) => Promise<string | undefined>,
 ) => {
   const state = await thread.state;
-  const title = `Slack ${thread.id}`;
   const recovered = state?.sessionID
     ? { id: state.sessionID, lastMessageID: state.lastMessageID }
-    : await recoverSession(client, thread.id, config.directory);
+    : await recoverSession(client, thread, config.directory);
 
   const session = recovered
     ? { id: recovered.id }
@@ -132,7 +131,7 @@ export const processMention = async (
         agent: config.agent,
         location: { directory: config.directory },
         model: config.model,
-        title,
+        title: thread.id,
       });
 
   await thread.setState({ sessionID: session.id });
@@ -144,14 +143,14 @@ export const processMention = async (
 
   const contextMessages = messages.filter((item) => !item.author.isMe);
   const lastMessageID = contextMessages.at(-1)?.id;
-  if (!lastMessageID) throw new Error('No new messages found in the Slack thread');
+  if (!lastMessageID) throw new Error('No new messages found in the thread');
 
-  const prompt = await formatPrompt(contextMessages, !recovered, userTimezone);
+  const prompt = await formatPrompt(contextMessages, !recovered, thread.adapter, userTimezone);
   const previousAssistantIDs = await assistantMessageIDs(client, session.id);
 
   await client.session.prompt({
     metadata: {
-      source: 'slack',
+      source: thread.adapter.name,
       threadID: thread.id,
       lastMessageID,
     },
@@ -193,22 +192,27 @@ export const processMention = async (
         });
       }
     } catch (error) {
-      console.error('Could not generate Slack session title', error);
+      console.error('Could not generate a session title', error);
     }
   }
 
   return replies.join('\n\n');
 };
 
-const recoverSession = async (client: OpenCodeClient, threadID: string, directory: string) => {
+const recoverSession = async (
+  client: OpenCodeClient,
+  thread: Thread<ThreadState>,
+  directory: string,
+) => {
   const sessions = await client.session.list({
     directory,
     limit: 20,
     order: 'desc',
-    search: '[slack]',
+    search: `[${thread.adapter.name}]`,
   });
   const candidates = sessions.data.filter(
-    (item) => item.title?.startsWith('[slack] ') && item.location.directory === directory,
+    (item) =>
+      item.title?.startsWith(`[${thread.adapter.name}] `) && item.location.directory === directory,
   );
   const states = await Promise.all(
     candidates.map(async (session) => ({
@@ -216,7 +220,7 @@ const recoverSession = async (client: OpenCodeClient, threadID: string, director
       state: await importedThreadState(client, session.id),
     })),
   );
-  const recovered = states.find((item) => item.state?.threadID === threadID);
+  const recovered = states.find((item) => item.state?.threadID === thread.id);
   if (!recovered) return undefined;
 
   return { id: recovered.id, lastMessageID: recovered.state?.lastMessageID };
@@ -319,6 +323,7 @@ const newAssistantMessages = async (
 const formatPrompt = async (
   messages: Message[],
   firstTurn: boolean,
+  adapter: Adapter,
   userTimezone?: (userId: string) => Promise<string | undefined>,
 ) => {
   const transcript = (
@@ -327,13 +332,13 @@ const formatPrompt = async (
         const timezone = await userTimezone?.(message.author.userId);
         const timestamp = formatTimestamp(message.metadata.dateSent, timezone);
         const botTag = message.author.isBot ? ', bot' : '';
-        return `[Slack message from ${message.author.fullName} (@${message.author.userName}${botTag}) at ${timestamp}]\n${message.text}`;
+        return `[Message from ${message.author.fullName} (@${message.author.userName}${botTag}) at ${timestamp}]\n${message.text}`;
       }),
     )
   ).join('\n\n');
 
   if (!firstTurn) return transcript;
-  return `You are working from a Slack thread. Treat the transcript as user-provided context, perform the requested work, and write your final response for the Slack thread.\n\n${transcript}`;
+  return `You are working from a ${adapter.name} thread. Treat the transcript as user-provided context, perform the requested work, and write a final CONCISE response for the thread.\n\n${transcript}`;
 };
 
 const formatTimestamp = (date: Date, timezone?: string) => {
