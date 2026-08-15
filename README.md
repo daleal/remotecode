@@ -12,8 +12,8 @@ retains its own assistant and tool history, so prior content is neither duplicat
 and the model's prompt prefix remains cacheable.
 
 No database is required. The active process caches thread state in memory. For restart recovery,
-the app finds the session by its deterministic Slack thread title and reads the last imported Slack
-message ID from OpenCode prompt metadata.
+the app finds generated `[slack]` sessions and matches the Slack thread and last imported message IDs
+from OpenCode prompt metadata.
 
 ## Slack Setup
 
@@ -31,19 +31,20 @@ tag arrives, but never trigger the agent themselves.
 
 ## Configuration
 
-| Variable              | Default                 | Purpose                                     |
-| --------------------- | ----------------------- | ------------------------------------------- |
-| `SLACK_BOT_TOKEN`     | required                | Single-workspace bot token                  |
-| `SLACK_APP_TOKEN`     | required                | Socket Mode app token                       |
-| `SLACK_BOT_NAME`      | `remotecode`            | Mention username used by Chat SDK           |
-| `ALLOWED_SLACK_USERS` | empty                   | Allowed user IDs; empty denies all mentions |
-| `OPENCODE_URL`        | `http://127.0.0.1:4096` | OpenCode v2 server                          |
-| `OPENCODE_DIRECTORY`  | `~/repos`               | Working directory for new sessions          |
-| `OPENCODE_AGENT`      | `build`                 | OpenCode agent                              |
-| `OPENCODE_MODEL`      | `openai/gpt-5.6-sol`    | Model in `provider/model` form              |
-| `OPENCODE_EFFORT`     | `medium`                | Model variant/effort, such as `high`        |
-| `OPENCODE_USERNAME`   | `opencode`              | OpenCode Basic auth username                |
-| `OPENCODE_PASSWORD`   | required                | OpenCode Basic auth password                |
+| Variable               | Default                 | Purpose                                     |
+| ---------------------- | ----------------------- | ------------------------------------------- |
+| `SLACK_BOT_TOKEN`      | required                | Single-workspace bot token                  |
+| `SLACK_APP_TOKEN`      | required                | Socket Mode app token                       |
+| `SLACK_BOT_NAME`       | `remotecode`            | Mention username used by Chat SDK           |
+| `ALLOWED_SLACK_USERS`  | empty                   | Allowed user IDs; empty denies all mentions |
+| `OPENCODE_URL`         | `http://127.0.0.1:4096` | OpenCode v2 server                          |
+| `OPENCODE_DIRECTORY`   | `~/repos`               | Working directory for new sessions          |
+| `OPENCODE_AGENT`       | `build`                 | OpenCode agent                              |
+| `OPENCODE_MODEL`       | `openai/gpt-5.6-sol`    | Main model in `provider/model` form         |
+| `OPENCODE_SMALL_MODEL` | `openai/gpt-5.6-luna`   | Utility model in `provider/model` form      |
+| `OPENCODE_EFFORT`      | `medium`                | Model variant/effort, such as `high`        |
+| `OPENCODE_USERNAME`    | `opencode`              | OpenCode Basic auth username                |
+| `OPENCODE_PASSWORD`    | required                | OpenCode Basic auth password                |
 
 ## Local Mock
 

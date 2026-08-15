@@ -26,6 +26,7 @@ describe('Slack agent', () => {
       return { data: [...messages].reverse(), cursor: { next: 'next-page' } };
     });
     const client = {
+      generate: { text: vi.fn(async () => ({ text: 'Handle Slack requests' })) },
       message: { list: listMessages },
       session: {
         create: vi.fn(async () => ({ id: 'session-1' })),
@@ -46,6 +47,7 @@ describe('Slack agent', () => {
             },
           );
         }),
+        rename: vi.fn(async () => {}),
         wait: vi.fn(async () => {}),
       },
     } as unknown as OpenCodeClient;
@@ -57,6 +59,7 @@ describe('Slack agent', () => {
         agent: 'build',
         directory: '/tmp',
         model: { id: 'model', providerID: 'provider', variant: 'high' },
+        smallModel: { id: 'small-model', providerID: 'provider' },
       },
       openCode: client,
       state: createMemoryState(),
@@ -92,6 +95,15 @@ describe('Slack agent', () => {
     expect(adapter.removedReactions.map((reaction) => reaction.emoji)).toEqual(['eyes', 'eyes']);
     expect(adapter.outputs).toEqual(['response 1', 'response 2']);
     expect(listMessages.mock.calls.some(([input]) => input.cursor === 'next-page')).toBe(true);
+    expect(client.generate.text).toHaveBeenCalledWith({
+      location: { directory: '/tmp' },
+      model: { id: 'small-model', providerID: 'provider' },
+      prompt: expect.stringContaining('You are a title generator.'),
+    });
+    expect(client.session.rename).toHaveBeenCalledWith({
+      sessionID: 'session-1',
+      title: '[slack] Handle Slack requests',
+    });
   });
 
   it('replaces the processing reaction with an error without posting details', async () => {
@@ -113,6 +125,7 @@ describe('Slack agent', () => {
         agent: 'build',
         directory: '/tmp',
         model: { id: 'model', providerID: 'provider', variant: 'high' },
+        smallModel: { id: 'small-model', providerID: 'provider' },
       },
       openCode: client,
       state: createMemoryState(),
@@ -141,6 +154,7 @@ describe('Slack agent', () => {
         agent: 'build',
         directory: '/tmp',
         model: { id: 'model', providerID: 'provider', variant: 'high' },
+        smallModel: { id: 'small-model', providerID: 'provider' },
       },
       openCode: client,
       state: createMemoryState(),

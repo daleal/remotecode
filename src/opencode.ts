@@ -11,6 +11,10 @@ export interface OpenCodeConfig {
     providerID: string;
     variant: string;
   };
+  smallModel: {
+    id: string;
+    providerID: string;
+  };
 }
 
 export const createOpenCodeClient = async (): Promise<OpenCodeClient> => {
@@ -27,6 +31,7 @@ export const getOpenCodeConfig = (): OpenCodeConfig => {
     agent: env.OPENCODE_AGENT,
     directory: expandHome(env.OPENCODE_DIRECTORY),
     model: { ...env.OPENCODE_MODEL, variant: env.OPENCODE_EFFORT },
+    smallModel: env.OPENCODE_SMALL_MODEL,
   };
 };
 

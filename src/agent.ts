@@ -17,6 +17,51 @@ interface CreateAgentOptions {
   userName: string;
 }
 
+const TITLE_PROMPT = `You are a title generator. You output ONLY a thread title. Nothing else.
+
+<task>
+Generate a brief title that would help the user find this conversation later.
+
+Follow all rules in <rules>
+Use the <examples> so you know what a good title looks like.
+Your output must be:
+- A single line
+- <=50 characters
+- No explanations
+</task>
+
+<rules>
+- you MUST use the same language as the user message you are summarizing
+- Title must be grammatically correct and read naturally - no word salad
+- Never include tool names in the title (e.g. "read tool", "bash tool", "edit tool")
+- Focus on the main topic or question the user needs to retrieve
+- Vary your phrasing - avoid repetitive patterns like always starting with "Analyzing"
+- When a file is mentioned, focus on WHAT the user wants to do WITH the file, not just that they shared it
+- Keep exact: technical terms, numbers, filenames, HTTP codes
+- Remove: the, this, my, a, an
+- Never assume tech stack
+- Never use tools
+- NEVER respond to questions, just generate a title for the conversation
+- The title should NEVER include "summarizing" or "generating" when generating a title
+- DO NOT SAY YOU CANNOT GENERATE A TITLE OR COMPLAIN ABOUT THE INPUT
+- Always output something meaningful, even if the input is minimal.
+- If the user message is short or conversational (e.g. "hello", "lol", "what's up", "hey"):
+  -> create a title that reflects the user's tone or intent (such as Greeting, Quick check-in, Light chat, Intro message, etc.)
+</rules>
+
+<examples>
+"debug 500 errors in production" -> Debugging production 500 errors
+"refactor user service" -> Refactoring user service
+"why is app.js failing" -> app.js failure investigation
+"implement rate limiting" -> Rate limiting implementation
+"how do I connect postgres to my API" -> Postgres API connection
+"best practices for React hooks" -> React hooks best practices
+"@src/credential.ts can you add refresh token support" -> Credential refresh token support
+"@utils/parser.ts this is broken" -> Parser bug fix
+"look at @config.json" -> Config review
+"@App.tsx add dark mode toggle" -> Dark mode toggle in App
+</examples>`;
+
 export const createAgent = (options: CreateAgentOptions) => {
   const bot = new Chat<typeof options.adapters, ThreadState>({
     adapters: options.adapters,
@@ -79,7 +124,7 @@ export const processMention = async (
   const title = `Slack ${thread.id}`;
   const recovered = state?.sessionID
     ? { id: state.sessionID, lastMessageID: state.lastMessageID }
-    : await recoverSession(client, title, config.directory);
+    : await recoverSession(client, thread.id, config.directory);
 
   const session = recovered
     ? { id: recovered.id }
@@ -128,28 +173,56 @@ export const processMention = async (
     throw new Error(failure?.error?.message ?? 'OpenCode returned no text');
   }
 
+  if (!recovered) {
+    try {
+      const generated = await client.generate.text({
+        location: { directory: config.directory },
+        model: config.smallModel,
+        prompt: `${TITLE_PROMPT}\n\n${prompt}`,
+      });
+      const generatedTitle = generated.text
+        .split('\n')
+        .map((line) => line.trim())
+        .find(Boolean);
+      if (generatedTitle) {
+        const title =
+          generatedTitle.length <= 100 ? generatedTitle : `${generatedTitle.slice(0, 97)}...`;
+        await client.session.rename({
+          sessionID: session.id,
+          title: `[${thread.adapter.name}] ${title}`,
+        });
+      }
+    } catch (error) {
+      console.error('Could not generate Slack session title', error);
+    }
+  }
+
   return replies.join('\n\n');
 };
 
-const recoverSession = async (client: OpenCodeClient, title: string, directory: string) => {
+const recoverSession = async (client: OpenCodeClient, threadID: string, directory: string) => {
   const sessions = await client.session.list({
     directory,
     limit: 20,
     order: 'desc',
-    search: title,
+    search: '[slack]',
   });
-  const session = sessions.data.find(
-    (item) => item.title === title && item.location.directory === directory,
+  const candidates = sessions.data.filter(
+    (item) => item.title?.startsWith('[slack] ') && item.location.directory === directory,
   );
-  if (!session) return undefined;
+  const states = await Promise.all(
+    candidates.map(async (session) => ({
+      id: session.id,
+      state: await importedThreadState(client, session.id),
+    })),
+  );
+  const recovered = states.find((item) => item.state?.threadID === threadID);
+  if (!recovered) return undefined;
 
-  return {
-    id: session.id,
-    lastMessageID: await lastImportedMessageID(client, session.id),
-  };
+  return { id: recovered.id, lastMessageID: recovered.state?.lastMessageID };
 };
 
-const lastImportedMessageID = async (client: OpenCodeClient, sessionID: string) => {
+const importedThreadState = async (client: OpenCodeClient, sessionID: string) => {
   let cursor: string | undefined;
 
   do {
@@ -160,8 +233,14 @@ const lastImportedMessageID = async (client: OpenCodeClient, sessionID: string) 
     });
     for (const item of page.data) {
       if (item.type !== 'user') continue;
+      const threadID = item.metadata?.threadID;
       const lastMessageID = item.metadata?.lastMessageID;
-      if (typeof lastMessageID === 'string') return lastMessageID;
+      if (typeof threadID === 'string') {
+        return {
+          threadID,
+          lastMessageID: typeof lastMessageID === 'string' ? lastMessageID : undefined,
+        };
+      }
     }
     cursor = page.cursor.next ?? undefined;
   } while (cursor);

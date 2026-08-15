@@ -19,6 +19,9 @@ const envSchema = zod.object({
   OPENCODE_DIRECTORY: zod.string().optional().default('~/repos'),
   OPENCODE_AGENT: zod.string().optional().default('build'),
   OPENCODE_MODEL: modelSchema.optional().default({ providerID: 'openai', id: 'gpt-5.6-sol' }),
+  OPENCODE_SMALL_MODEL: modelSchema
+    .optional()
+    .default({ providerID: 'openai', id: 'gpt-5.6-luna' }),
   OPENCODE_EFFORT: zod.string().optional().default('medium'),
   OPENCODE_USERNAME: zod.string().optional().default('opencode'),
   OPENCODE_PASSWORD: zod.string(),
