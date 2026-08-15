@@ -31,7 +31,7 @@ describe('createThreadWorkspace', () => {
       }),
     ).resolves.toBe('/srv/remote/sessions/abc');
     expect(client.shell.create).toHaveBeenCalledWith({
-      command: expect.stringContaining("'~/repos' '~/remotecode'"),
+      command: expect.stringMatching(/'~\/repos' '~\/remotecode' '[a-f0-9]{20}' 8$/),
       timeout: 120_000,
     });
     expect(client.shell.remove).toHaveBeenCalledWith({ id: 'shell-1' });

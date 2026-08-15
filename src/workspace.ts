@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
 import type { OpenCodeClient } from '@opencode-ai/client';
 
+const PROVISION_CONCURRENCY = 8;
+
 const PROVISION_SCRIPT = String.raw`
 expand_path() {
   case "$1" in
@@ -15,6 +17,7 @@ expand_path() {
 repository_root=$(expand_path "$1")
 workspace_root=$(expand_path "$2")
 key=$3
+concurrency=$4
 directory="$workspace_root/sessions/$key"
 ready="$directory/.remotecode-ready"
 
@@ -24,22 +27,47 @@ if [ -f "$ready" ]; then
 fi
 
 mkdir -p "$directory"
+
+prepare_repository() {
+  local repository=$1
+  local target=$2
+  local branch="remotecode/$key"
+
+  git -C "$repository" fetch --prune origin \
+    '+refs/heads/main:refs/remotes/origin/main'
+  git -C "$repository" worktree prune
+  if git -C "$repository" show-ref --verify --quiet "refs/heads/$branch"; then
+    git -C "$repository" worktree add "$target" "$branch"
+  else
+    git -C "$repository" worktree add -b "$branch" "$target" refs/remotes/origin/main
+  fi
+  printf '%s\n' "$key" > "$target/.remotecode-ready"
+}
+
 found=false
+failed=false
+running=0
 for repository in "$repository_root"/*; do
   [ -e "$repository/.git" ] || continue
   found=true
   name=$(basename "$repository")
   target="$directory/$name"
-  [ -e "$target" ] && continue
-
-  git -C "$repository" fetch --prune origin \
-    '+refs/heads/main:refs/remotes/origin/main'
-  git -C "$repository" worktree prune
   branch="remotecode/$key"
-  if git -C "$repository" show-ref --verify --quiet "refs/heads/$branch"; then
-    git -C "$repository" worktree add "$target" "$branch"
-  else
-    git -C "$repository" worktree add -b "$branch" "$target" refs/remotes/origin/main
+
+  if [ -e "$target" ]; then
+    if [ "$(cat "$target/.remotecode-ready" 2>/dev/null)" = "$key" ] &&
+      [ -e "$target/.git" ] &&
+      [ "$(git -C "$target" symbolic-ref -q HEAD 2>/dev/null)" = "refs/heads/$branch" ]; then
+      continue
+    fi
+    rm -rf -- "$target"
+  fi
+
+  prepare_repository "$repository" "$target" &
+  running=$((running + 1))
+  if [ "$running" -ge "$concurrency" ]; then
+    wait -n || failed=true
+    running=$((running - 1))
   fi
 done
 
@@ -47,6 +75,13 @@ done
   printf 'No Git repositories found directly under %s\n' "$repository_root" >&2
   exit 1
 }
+
+while [ "$running" -gt 0 ]; do
+  wait -n || failed=true
+  running=$((running - 1))
+done
+[ "$failed" = false ] || exit 1
+
 printf '%s\n' "$key" > "$ready"
 printf 'REMOTECODE_WORKSPACE=%s\n' "$directory"
 `;
@@ -72,7 +107,7 @@ export const createThreadWorkspace = async ({
   const operation = provisionQueue
     .catch(() => {})
     .then(async () => {
-      const command = `bash -ceu ${quote(PROVISION_SCRIPT)} -- ${quote(repositoryRoot)} ${quote(workspaceRoot)} ${quote(key)}`;
+      const command = `bash -ceu ${quote(PROVISION_SCRIPT)} -- ${quote(repositoryRoot)} ${quote(workspaceRoot)} ${quote(key)} ${PROVISION_CONCURRENCY}`;
       const started = await client.shell.create({ command, timeout: 2 * 60 * 1000 });
 
       try {
