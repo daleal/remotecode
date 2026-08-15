@@ -159,6 +159,88 @@ describe('Slack agent', () => {
     expect(errorLog).toHaveBeenCalledWith(expect.objectContaining({ message: 'private failure' }));
   });
 
+  it('waits for a background subagent before posting the final response', async () => {
+    vi.useFakeTimers();
+    const messages: unknown[] = [];
+    let waits = 0;
+    const client = {
+      generate: { text: vi.fn(async () => ({ text: 'Background task' })) },
+      message: {
+        list: vi.fn(async () => ({ data: [...messages].reverse(), cursor: {} })),
+      },
+      session: {
+        create: vi.fn(async () => ({ id: 'session-1' })),
+        list: vi.fn(async () => ({ data: [], cursor: {} })),
+        prompt: vi.fn(async (input) => {
+          messages.push({ id: 'user-1', metadata: input.metadata, type: 'user' });
+        }),
+        rename: vi.fn(async () => {}),
+        wait: vi.fn(async () => {
+          waits += 1;
+          if (waits === 1) {
+            messages.push({
+              content: [
+                {
+                  id: 'tool-1',
+                  name: 'subagent',
+                  state: {
+                    input: { background: true },
+                    metadata: { sessionID: 'child-1' },
+                    status: 'completed',
+                  },
+                  time: { created: 1 },
+                  type: 'tool',
+                },
+                { text: 'Interim response', type: 'text' },
+              ],
+              id: 'assistant-interim',
+              type: 'assistant',
+            });
+          } else {
+            messages.push({
+              content: [{ text: 'Expected final response', type: 'text' }],
+              id: 'assistant-final',
+              type: 'assistant',
+            });
+          }
+        }),
+      },
+    } as unknown as OpenCodeClient;
+    const adapter = new MockAdapter('remotecode');
+    const bot = createAgent({
+      adapters: { mock: adapter },
+      allowedUsers: ['local-user'],
+      config: {
+        agent: 'build',
+        model: { id: 'model', providerID: 'provider', variant: 'high' },
+        reposRoot: '/tmp',
+        smallModel: { id: 'small-model', providerID: 'provider' },
+        workspaceRoot: '/tmp/workspaces',
+      },
+      openCode: client,
+      state: createMemoryState(),
+      userName: 'remotecode',
+      workspaceForThread: async ({ repositoryRoot }) => repositoryRoot,
+    });
+    bots.push(bot);
+    await bot.initialize();
+
+    const response = adapter.receive('one', 'delegate this');
+    await vi.advanceTimersByTimeAsync(1000);
+    messages.push({
+      id: 'subagent-result',
+      metadata: { childID: 'child-1', source: 'subagent', state: 'completed' },
+      text: 'Child result',
+      type: 'synthetic',
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    await response;
+
+    expect(client.session.wait).toHaveBeenCalledTimes(2);
+    expect(adapter.outputs).toEqual(['Expected final response']);
+    vi.useRealTimers();
+  });
+
   it('replaces the setup reaction with an error when workspace provisioning fails', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const adapter = new MockAdapter('remotecode');
