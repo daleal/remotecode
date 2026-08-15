@@ -57,6 +57,21 @@ path without Slack credentials. Every normal line is treated as a mention. Usefu
 
 Each mock thread maps to an independent OpenCode session, matching Slack behavior.
 
+## Docker Compose
+
+The included [`compose.yaml`](./compose.yaml) runs the local mock in a Docker container and mounts the
+repository for live code changes. Copy `.env.example` to `.env`, set `OPENCODE_PASSWORD`, start the
+local OpenCode service, then run:
+
+```bash
+docker compose run --rm dev
+```
+
+The service uses `network_mode: host`, so the default `OPENCODE_URL=http://127.0.0.1:4096` reaches
+OpenCode on the host. This setup requires Docker host-networking support and is intended for Linux.
+The placeholder Slack tokens in `compose.yaml` are only used to satisfy configuration validation;
+the local mock does not connect to Slack.
+
 ## Checks
 
 ```bash

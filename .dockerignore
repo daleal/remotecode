@@ -1,0 +1,10 @@
+# Exclude everything
+*
+
+# Include application files
+!src
+
+# Include config files
+!bun.lock
+!package.json
+!tsconfig.json
