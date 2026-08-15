@@ -5,6 +5,16 @@ const envSchema = zod.object({
   SLACK_BOT_TOKEN: zod.string(),
   SLACK_APP_TOKEN: zod.string(),
   SLACK_BOT_NAME: zod.string().optional().default('remotecode'),
+  ALLOWED_SLACK_USERS: zod
+    .string()
+    .optional()
+    .default('')
+    .transform((value) =>
+      value
+        .split(';')
+        .map((user) => user.trim())
+        .filter(Boolean),
+    ),
   OPENCODE_URL: zod.url().optional().default('http://127.0.0.1:4096'),
   OPENCODE_DIRECTORY: zod.string().optional().default('~/repos'),
   OPENCODE_AGENT: zod.string().optional().default('build'),

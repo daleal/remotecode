@@ -47,6 +47,7 @@ describe('Slack agent', () => {
     const adapter = new MockAdapter('remotecode');
     const bot = createAgent({
       adapters: { mock: adapter },
+      allowedSlackUsers: ['local-user'],
       config: {
         agent: 'build',
         directory: '/tmp',
@@ -102,6 +103,7 @@ describe('Slack agent', () => {
     const adapter = new MockAdapter('remotecode');
     const bot = createAgent({
       adapters: { mock: adapter },
+      allowedSlackUsers: ['local-user'],
       config: {
         agent: 'build',
         directory: '/tmp',
@@ -120,5 +122,32 @@ describe('Slack agent', () => {
     expect(adapter.reactions.map((reaction) => reaction.emoji)).toEqual(['eyes', 'x']);
     expect(adapter.removedReactions.map((reaction) => reaction.emoji)).toEqual(['eyes']);
     expect(errorLog).toHaveBeenCalledWith(expect.objectContaining({ message: 'private failure' }));
+  });
+
+  it('ignores mentions from users outside the allowlist', async () => {
+    const client = {
+      session: { create: vi.fn(), list: vi.fn() },
+    } as unknown as OpenCodeClient;
+    const adapter = new MockAdapter('remotecode');
+    const bot = createAgent({
+      adapters: { mock: adapter },
+      allowedSlackUsers: [],
+      config: {
+        agent: 'build',
+        directory: '/tmp',
+        model: { id: 'model', providerID: 'provider', variant: 'high' },
+      },
+      openCode: client,
+      state: createMemoryState(),
+      userName: 'remotecode',
+    });
+    bots.push(bot);
+    await bot.initialize();
+
+    await adapter.receive('one', 'ignored');
+
+    expect(client.session.create).not.toHaveBeenCalled();
+    expect(adapter.outputs).toEqual([]);
+    expect(adapter.reactions).toEqual([]);
   });
 });

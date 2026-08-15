@@ -9,6 +9,7 @@ const adapter = new MockAdapter(env.SLACK_BOT_NAME);
 const openCode = await createOpenCodeClient();
 const bot = createAgent({
   adapters: { mock: adapter },
+  allowedUsers: env.ALLOWED_SLACK_USERS,
   config: getOpenCodeConfig(),
   openCode,
   state: createMemoryState(),

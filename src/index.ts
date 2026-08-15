@@ -29,6 +29,7 @@ const userTimezone = (userId: string) => {
 const openCode = await createOpenCodeClient();
 const bot = createAgent({
   adapters: { slack },
+  allowedUsers: env.ALLOWED_SLACK_USERS,
   config: getOpenCodeConfig(),
   openCode,
   state,

@@ -9,6 +9,7 @@ interface ThreadState {
 
 interface CreateAgentOptions {
   adapters: Record<string, Adapter>;
+  allowedUsers: string[];
   config: OpenCodeConfig;
   openCode: OpenCodeClient;
   state: StateAdapter;
@@ -29,6 +30,8 @@ export const createAgent = (options: CreateAgentOptions) => {
   });
 
   bot.onNewMention(async (thread, message) => {
+    if (!options.allowedUsers.includes(message.author.userId)) return;
+
     try {
       await thread.adapter.addReaction(thread.id, message.id, 'eyes');
     } catch (error) {
