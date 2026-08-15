@@ -1,8 +1,17 @@
 # RemoteCode
 
-A single-workspace Slack agent backed by a local OpenCode v2 server. It responds only to
+A workspace-isolated Slack agent backed by an OpenCode v2 server. It responds only to
 `@mentions`, reacts with `:eyes:` while working and `:white_check_mark:` or `:x:` when finished,
 and creates one OpenCode session per Slack thread.
+
+Each new thread also gets an isolated Git workspace. Through OpenCode's remote shell API, RemoteCode
+discovers Git repositories directly under `REPOS_ROOT`, fetches each repository's `origin/main`, and
+creates one worktree per repository under `WORKSPACE_ROOT/sessions`.
+Existing threads keep their original worktrees and changes. RemoteCode itself needs no filesystem
+access to either path; both paths belong to the machine running the OpenCode server.
+
+Repositories must be immediate children of `REPOS_ROOT`, have an `origin` remote, and expose
+`origin/main`. The checked-out branch and files in each source working copy are never changed.
 
 ## How Thread Context Works
 
@@ -17,7 +26,7 @@ from OpenCode prompt metadata.
 
 ## Slack Setup
 
-1. Start the OpenCode v2 service at `http://127.0.0.1:4096` with `opencode2 service start`.
+1. Start an OpenCode v2 service and make its authenticated HTTP API reachable by RemoteCode.
 2. Create a Slack app from [`slack-manifest.yaml`](./slack-manifest.yaml).
 3. Under **Basic Information > App-Level Tokens**, create a token with `connections:write`.
 4. Install the app into the workspace and invite it to channels where it should work.
@@ -38,7 +47,8 @@ tag arrives, but never trigger the agent themselves.
 | `SLACK_BOT_NAME`       | `remotecode`            | Mention username used by Chat SDK           |
 | `ALLOWED_SLACK_USERS`  | empty                   | Allowed user IDs; empty denies all mentions |
 | `OPENCODE_URL`         | `http://127.0.0.1:4096` | OpenCode v2 server                          |
-| `OPENCODE_DIRECTORY`   | `~/repos`               | Working directory for new sessions          |
+| `REPOS_ROOT`           | `~/repos`               | Root containing source Git repositories     |
+| `WORKSPACE_ROOT`       | `~/remotecode`          | Isolated thread workspaces                  |
 | `OPENCODE_AGENT`       | `build`                 | OpenCode agent                              |
 | `OPENCODE_MODEL`       | `openai/gpt-5.6-sol`    | Main model in `provider/model` form         |
 | `OPENCODE_SMALL_MODEL` | `openai/gpt-5.6-luna`   | Utility model in `provider/model` form      |
@@ -72,7 +82,8 @@ docker compose run --rm dev
 The service uses `network_mode: host`, so the default `OPENCODE_URL=http://127.0.0.1:4096` reaches
 OpenCode on the host. This setup requires Docker host-networking support and is intended for Linux.
 The placeholder Slack tokens in `compose.yaml` are only used to satisfy configuration validation;
-the local mock does not connect to Slack.
+the local mock does not connect to Slack. Repository and workspace mounts are unnecessary because
+all filesystem operations run through the OpenCode server.
 
 ## Checks
 

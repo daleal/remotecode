@@ -1,6 +1,7 @@
 import type { OpenCodeClient } from '@opencode-ai/client';
 import { Chat, type Adapter, type Message, type StateAdapter, type Thread } from 'chat';
 import type { OpenCodeConfig } from './opencode';
+import { createThreadWorkspace } from './workspace';
 
 interface ThreadState {
   lastMessageID?: string;
@@ -15,6 +16,7 @@ interface CreateAgentOptions {
   state: StateAdapter;
   userTimezone?: (userId: string) => Promise<string | undefined>;
   userName: string;
+  workspaceForThread?: typeof createThreadWorkspace;
 }
 
 const TITLE_PROMPT = `You are a title generator. You output ONLY a thread title. Nothing else.
@@ -91,6 +93,7 @@ export const createAgent = (options: CreateAgentOptions) => {
         thread,
         message,
         options.userTimezone,
+        options.workspaceForThread,
       );
       await thread.post(response);
     } catch (error) {
@@ -119,17 +122,25 @@ export const processMention = async (
   thread: Thread<ThreadState>,
   triggeringMessage: Message,
   userTimezone?: (userId: string) => Promise<string | undefined>,
+  workspaceForThread = createThreadWorkspace,
 ) => {
+  const directory = await workspaceForThread(
+    client,
+    config.reposRoot,
+    config.workspaceRoot,
+    thread.adapter.name,
+    thread.id,
+  );
   const state = await thread.state;
   const recovered = state?.sessionID
     ? { id: state.sessionID, lastMessageID: state.lastMessageID }
-    : await recoverSession(client, thread, config.directory);
+    : await recoverSession(client, thread, directory);
 
   const session = recovered
     ? { id: recovered.id }
     : await client.session.create({
         agent: config.agent,
-        location: { directory: config.directory },
+        location: { directory },
         model: config.model,
         title: thread.id,
       });
@@ -175,7 +186,7 @@ export const processMention = async (
   if (!recovered) {
     try {
       const generated = await client.generate.text({
-        location: { directory: config.directory },
+        location: { directory },
         model: config.smallModel,
         prompt: `${TITLE_PROMPT}\n\n${prompt}`,
       });

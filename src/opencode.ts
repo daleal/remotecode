@@ -1,11 +1,8 @@
-import { homedir } from 'node:os';
-import { resolve } from 'node:path';
 import { OpenCode, type OpenCodeClient } from '@opencode-ai/client';
 import { env } from '~/config/env';
 
 export interface OpenCodeConfig {
   agent: string;
-  directory: string;
   model: {
     id: string;
     providerID: string;
@@ -15,6 +12,8 @@ export interface OpenCodeConfig {
     id: string;
     providerID: string;
   };
+  reposRoot: string;
+  workspaceRoot: string;
 }
 
 export const createOpenCodeClient = async (): Promise<OpenCodeClient> => {
@@ -29,14 +28,9 @@ export const createOpenCodeClient = async (): Promise<OpenCodeClient> => {
 export const getOpenCodeConfig = (): OpenCodeConfig => {
   return {
     agent: env.OPENCODE_AGENT,
-    directory: expandHome(env.OPENCODE_DIRECTORY),
     model: { ...env.OPENCODE_MODEL, variant: env.OPENCODE_EFFORT },
+    reposRoot: env.REPOS_ROOT,
     smallModel: env.OPENCODE_SMALL_MODEL,
+    workspaceRoot: env.WORKSPACE_ROOT,
   };
-};
-
-const expandHome = (path: string) => {
-  if (path === '~') return homedir();
-  if (path.startsWith('~/')) return resolve(homedir(), path.slice(2));
-  return resolve(path);
 };

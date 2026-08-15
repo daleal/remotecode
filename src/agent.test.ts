@@ -57,14 +57,16 @@ describe('Slack agent', () => {
       allowedUsers: ['local-user'],
       config: {
         agent: 'build',
-        directory: '/tmp',
         model: { id: 'model', providerID: 'provider', variant: 'high' },
+        reposRoot: '/tmp',
         smallModel: { id: 'small-model', providerID: 'provider' },
+        workspaceRoot: '/tmp/workspaces',
       },
       openCode: client,
       state: createMemoryState(),
       userTimezone: async () => 'Europe/Madrid',
       userName: 'remotecode',
+      workspaceForThread: async (_client, directory) => directory,
     });
     bots.push(bot);
     await bot.initialize();
@@ -79,8 +81,8 @@ describe('Slack agent', () => {
     expect(prompts[0]?.text).toContain('background context');
     expect(prompts[0]?.text).toContain('automated context');
     expect(prompts[0]?.text).toContain('first request');
-    expect(prompts[0]?.text).toContain('Slack message from Local User (@local) at');
-    expect(prompts[0]?.text).toContain('Slack message from Local User (@local, bot) at');
+    expect(prompts[0]?.text).toContain('Message from Local User (@local) at');
+    expect(prompts[0]?.text).toContain('Message from Local User (@local, bot) at');
     expect(prompts[0]?.text).toContain('Z (timezone: Europe/Madrid)');
     expect(prompts[1]?.text).not.toContain('background context');
     expect(prompts[1]?.text).not.toContain('first request');
@@ -102,7 +104,7 @@ describe('Slack agent', () => {
     });
     expect(client.session.rename).toHaveBeenCalledWith({
       sessionID: 'session-1',
-      title: '[slack] Handle Slack requests',
+      title: '[mock] Handle Slack requests',
     });
   });
 
@@ -123,13 +125,15 @@ describe('Slack agent', () => {
       allowedUsers: ['local-user'],
       config: {
         agent: 'build',
-        directory: '/tmp',
         model: { id: 'model', providerID: 'provider', variant: 'high' },
+        reposRoot: '/tmp',
         smallModel: { id: 'small-model', providerID: 'provider' },
+        workspaceRoot: '/tmp/workspaces',
       },
       openCode: client,
       state: createMemoryState(),
       userName: 'remotecode',
+      workspaceForThread: async (_client, directory) => directory,
     });
     bots.push(bot);
     await bot.initialize();
@@ -152,13 +156,15 @@ describe('Slack agent', () => {
       allowedUsers: [],
       config: {
         agent: 'build',
-        directory: '/tmp',
         model: { id: 'model', providerID: 'provider', variant: 'high' },
+        reposRoot: '/tmp',
         smallModel: { id: 'small-model', providerID: 'provider' },
+        workspaceRoot: '/tmp/workspaces',
       },
       openCode: client,
       state: createMemoryState(),
       userName: 'remotecode',
+      workspaceForThread: async (_client, directory) => directory,
     });
     bots.push(bot);
     await bot.initialize();
