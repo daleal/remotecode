@@ -36,6 +36,8 @@ describe('createThreadWorkspace', () => {
       timeout: 120_000,
     });
     expect(create.mock.calls[0]?.[0]?.command).toContain('worktree add --detach');
+    expect(create.mock.calls[0]?.[0]?.command).toContain('HTTP 5[0-9][0-9]');
+    expect(create.mock.calls[0]?.[0]?.command).toContain('reference=refs/heads/main');
     expect(create.mock.calls[0]?.[0]?.command).not.toContain('remotecode/');
     expect(create.mock.calls[0]?.[0]?.command).not.toContain('wait -n');
     expect(client.shell.remove).toHaveBeenCalledWith({ id: 'shell-1' });

@@ -31,11 +31,23 @@ mkdir -p "$directory"
 prepare_repository() {
   local repository=$1
   local target=$2
+  local reference=refs/remotes/origin/main
+  local fetch_output
 
-  git -C "$repository" fetch --prune origin \
-    '+refs/heads/main:refs/remotes/origin/main'
+  if fetch_output=$(git -C "$repository" fetch --prune origin \
+    '+refs/heads/main:refs/remotes/origin/main' 2>&1); then
+    [ -z "$fetch_output" ] || printf '%s\n' "$fetch_output" >&2
+  else
+    printf '%s\n' "$fetch_output" >&2
+    if printf '%s\n' "$fetch_output" | grep -Eq 'HTTP 5[0-9][0-9]|returned error: 5[0-9][0-9]'; then
+      reference=refs/heads/main
+      printf 'Remote unavailable; using local main for %s\n' "$repository" >&2
+    else
+      return 1
+    fi
+  fi
   git -C "$repository" worktree prune
-  git -C "$repository" worktree add --detach "$target" refs/remotes/origin/main
+  git -C "$repository" worktree add --detach "$target" "$reference"
   printf '%s\n' "$key" > "$target/.remotecode-ready"
 }
 

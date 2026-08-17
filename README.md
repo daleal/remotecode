@@ -12,6 +12,8 @@ access to either path; both paths belong to the machine running the OpenCode ser
 
 Repositories must be immediate children of `REPOS_ROOT`, have an `origin` remote, and expose
 `origin/main`. The checked-out branch and files in each source working copy are never changed.
+If fetching fails because the remote returns HTTP 5xx, provisioning falls back to the repository's
+local `main` branch. Other fetch errors remain fatal.
 
 ## How Thread Context Works
 
