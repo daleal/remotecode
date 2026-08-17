@@ -47,6 +47,19 @@ prepare_repository() {
 found=false
 failed=false
 running=0
+pids=''
+
+wait_for_repository() {
+  set -- $pids
+  pid=$1
+  shift
+  pids=" $*"
+  if ! wait "$pid"; then
+    failed=true
+  fi
+  running=$((running - 1))
+}
+
 for repository in "$repository_root"/*; do
   [ -e "$repository/.git" ] || continue
   found=true
@@ -64,10 +77,10 @@ for repository in "$repository_root"/*; do
   fi
 
   prepare_repository "$repository" "$target" &
+  pids="$pids $!"
   running=$((running + 1))
   if [ "$running" -ge "$concurrency" ]; then
-    wait -n || failed=true
-    running=$((running - 1))
+    wait_for_repository
   fi
 done
 
@@ -77,8 +90,7 @@ done
 }
 
 while [ "$running" -gt 0 ]; do
-  wait -n || failed=true
-  running=$((running - 1))
+  wait_for_repository
 done
 [ "$failed" = false ] || exit 1
 

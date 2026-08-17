@@ -4,11 +4,12 @@ import { createThreadWorkspace } from './workspace';
 
 describe('createThreadWorkspace', () => {
   it('provisions the workspace through the OpenCode server', async () => {
+    const create = vi.fn(async (_input: { command: string; timeout: number }) => ({
+      data: { id: 'shell-1', status: 'running' },
+    }));
     const client = {
       shell: {
-        create: vi.fn(async () => ({
-          data: { id: 'shell-1', status: 'running' },
-        })),
+        create,
         get: vi.fn(async () => ({
           data: { exit: 0, id: 'shell-1', status: 'exited' },
         })),
@@ -30,10 +31,11 @@ describe('createThreadWorkspace', () => {
         workspaceRoot: '~/remotecode',
       }),
     ).resolves.toBe('/srv/remote/sessions/abc');
-    expect(client.shell.create).toHaveBeenCalledWith({
+    expect(create).toHaveBeenCalledWith({
       command: expect.stringMatching(/'~\/repos' '~\/remotecode' '[a-f0-9]{20}' 8$/),
       timeout: 120_000,
     });
+    expect(create.mock.calls[0]?.[0]?.command).not.toContain('wait -n');
     expect(client.shell.remove).toHaveBeenCalledWith({ id: 'shell-1' });
   });
 });
