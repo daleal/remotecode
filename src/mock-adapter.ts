@@ -12,19 +12,19 @@ import {
   type ThreadInfo,
 } from 'chat';
 
-interface MockThreadID {
+type MockThreadID = {
   channel: string;
   thread: string;
-}
+};
 
-interface MockRawMessage {
+type MockRawMessage = {
   dateSent: Date;
   id: string;
   isBot: boolean;
   isMe: boolean;
   text: string;
   threadId: string;
-}
+};
 
 export class MockAdapter implements Adapter<MockThreadID, MockRawMessage> {
   readonly name = 'mock';

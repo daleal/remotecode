@@ -1,6 +1,6 @@
 import type { OpenCodeClient } from '@opencode-ai/client';
 import { describe, expect, it, vi } from 'vitest';
-import { createThreadWorkspace } from './workspace';
+import { createThreadWorkspace } from '../workspace';
 
 describe('createThreadWorkspace', () => {
   it('provisions the workspace through the OpenCode server', async () => {

@@ -1,8 +1,8 @@
 import { createMemoryState } from '@chat-adapter/state-memory';
 import type { OpenCodeClient } from '@opencode-ai/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createAgent } from './agent';
-import { MockAdapter } from './mock-adapter';
+import { createAgent } from '../agent';
+import { MockAdapter } from '../mock-adapter';
 
 const bots: Array<ReturnType<typeof createAgent>> = [];
 

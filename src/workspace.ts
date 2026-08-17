@@ -106,13 +106,13 @@ printf 'REMOTECODE_WORKSPACE=%s\n' "$directory"
 
 let provisionQueue = Promise.resolve();
 
-interface CreateThreadWorkspaceOptions {
+type CreateThreadWorkspaceOptions = {
   adapter: string;
   client: OpenCodeClient;
   repositoryRoot: string;
   threadID: string;
   workspaceRoot: string;
-}
+};
 
 export const createThreadWorkspace = async ({
   adapter,

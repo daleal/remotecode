@@ -1,7 +1,7 @@
 import { OpenCode, type OpenCodeClient } from '@opencode-ai/client';
 import { env } from '~/config/env';
 
-export interface OpenCodeConfig {
+export type OpenCodeConfig = {
   agent: string;
   model: {
     id: string;
@@ -14,7 +14,7 @@ export interface OpenCodeConfig {
   };
   reposRoot: string;
   workspaceRoot: string;
-}
+};
 
 export const createOpenCodeClient = async (): Promise<OpenCodeClient> => {
   return OpenCode.make({
