@@ -63,9 +63,14 @@ export const createAgent = (options: CreateAgentOptions) => {
         workspaceRoot: options.config.workspaceRoot,
       });
       if (!hasSession) {
-        await removeReaction({ emoji: processingReaction, messageID: message.id, thread });
+        const previousReaction = processingReaction;
         processingReaction = 'eyes';
-        await addReaction({ emoji: processingReaction, messageID: message.id, thread });
+        await transitionReaction({
+          messageID: message.id,
+          thread,
+          from: previousReaction,
+          to: processingReaction,
+        });
       }
 
       const response = await processMention({
@@ -82,8 +87,12 @@ export const createAgent = (options: CreateAgentOptions) => {
       outcome = 'x';
     }
 
-    await removeReaction({ emoji: processingReaction, messageID: message.id, thread });
-    await addReaction({ emoji: outcome, messageID: message.id, thread });
+    await transitionReaction({
+      messageID: message.id,
+      thread,
+      from: processingReaction,
+      to: outcome,
+    });
   });
 
   return bot;
@@ -103,6 +112,18 @@ const removeReaction = async ({ emoji, messageID, thread }: ReactionOptions) => 
   } catch (error) {
     console.error(`Could not remove ${emoji} reaction`, error);
   }
+};
+
+const transitionReaction = async ({
+  messageID,
+  thread,
+  from,
+  to,
+}: Omit<ReactionOptions, 'emoji'> & { from: string; to: string }) => {
+  await Promise.all([
+    removeReaction({ emoji: from, messageID, thread }),
+    addReaction({ emoji: to, messageID, thread }),
+  ]);
 };
 
 export const processMention = async ({
