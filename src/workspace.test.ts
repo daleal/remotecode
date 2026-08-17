@@ -35,6 +35,8 @@ describe('createThreadWorkspace', () => {
       command: expect.stringMatching(/'~\/repos' '~\/remotecode' '[a-f0-9]{20}' 8$/),
       timeout: 120_000,
     });
+    expect(create.mock.calls[0]?.[0]?.command).toContain('worktree add --detach');
+    expect(create.mock.calls[0]?.[0]?.command).not.toContain('remotecode/');
     expect(create.mock.calls[0]?.[0]?.command).not.toContain('wait -n');
     expect(client.shell.remove).toHaveBeenCalledWith({ id: 'shell-1' });
   });

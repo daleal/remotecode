@@ -6,7 +6,7 @@ and `:white_check_mark:` or `:x:` when finished. It creates one OpenCode session
 
 Each new thread also gets an isolated Git workspace. Through OpenCode's remote shell API, RemoteCode
 discovers Git repositories directly under `REPOS_ROOT`, fetches each repository's `origin/main`, and
-creates one worktree per repository under `WORKSPACE_ROOT/sessions`.
+creates one detached worktree per repository under `WORKSPACE_ROOT/sessions`.
 Existing threads keep their original worktrees and changes. RemoteCode itself needs no filesystem
 access to either path; both paths belong to the machine running the OpenCode server.
 

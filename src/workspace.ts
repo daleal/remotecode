@@ -31,16 +31,11 @@ mkdir -p "$directory"
 prepare_repository() {
   local repository=$1
   local target=$2
-  local branch="remotecode/$key"
 
   git -C "$repository" fetch --prune origin \
     '+refs/heads/main:refs/remotes/origin/main'
   git -C "$repository" worktree prune
-  if git -C "$repository" show-ref --verify --quiet "refs/heads/$branch"; then
-    git -C "$repository" worktree add "$target" "$branch"
-  else
-    git -C "$repository" worktree add -b "$branch" "$target" refs/remotes/origin/main
-  fi
+  git -C "$repository" worktree add --detach "$target" refs/remotes/origin/main
   printf '%s\n' "$key" > "$target/.remotecode-ready"
 }
 
@@ -65,12 +60,11 @@ for repository in "$repository_root"/*; do
   found=true
   name=$(basename "$repository")
   target="$directory/$name"
-  branch="remotecode/$key"
 
   if [ -e "$target" ]; then
     if [ "$(cat "$target/.remotecode-ready" 2>/dev/null)" = "$key" ] &&
       [ -e "$target/.git" ] &&
-      [ "$(git -C "$target" symbolic-ref -q HEAD 2>/dev/null)" = "refs/heads/$branch" ]; then
+      ! git -C "$target" symbolic-ref -q HEAD >/dev/null 2>&1; then
       continue
     fi
     rm -rf -- "$target"
