@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { modelSchema } from '~/config/model';
+import { modelSchema } from './config/model';
 
 describe('modelSchema', () => {
   it('validates and transforms the provider/model value', () => {
