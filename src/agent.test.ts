@@ -172,8 +172,9 @@ describe('Slack agent', () => {
     expect(errorLog).toHaveBeenCalledWith(expect.objectContaining({ message: 'private failure' }));
   });
 
-  it('waits for a background subagent before posting the final response', async () => {
+  it('reconnects while waiting for a background subagent and posts the final response', async () => {
     vi.useFakeTimers();
+    const warningLog = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const messages: unknown[] = [];
     let waits = 0;
     const client = {
@@ -210,6 +211,7 @@ describe('Slack agent', () => {
               id: 'assistant-interim',
               type: 'assistant',
             });
+            throw new TypeError('connection lost');
           } else {
             messages.push({
               content: [{ text: 'Expected final response', type: 'text' }],
@@ -250,8 +252,13 @@ describe('Slack agent', () => {
     await vi.advanceTimersByTimeAsync(1000);
     await response;
 
-    expect(client.session.wait).toHaveBeenCalledTimes(2);
+    expect(client.session.wait).toHaveBeenCalledTimes(3);
     expect(adapter.outputs).toEqual(['Expected final response']);
+    expect(adapter.reactions.map((reaction) => reaction.emoji)).not.toContain('x');
+    expect(warningLog).toHaveBeenCalledWith(
+      'OpenCode wait connection failed for session-1; reconnecting',
+      expect.objectContaining({ message: 'connection lost' }),
+    );
     vi.useRealTimers();
   });
 

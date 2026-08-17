@@ -223,7 +223,7 @@ export const processMention = async ({
       text: prompt,
     });
     await thread.setState({ lastMessageID, sessionID: session.id });
-    await client.session.wait({ sessionID: session.id });
+    await waitForSession(client, session.id);
 
     newMessages = await newSessionMessages(client, session.id, previousAssistantIDs);
     const handledSubagents = new Set<string>();
@@ -237,7 +237,7 @@ export const processMention = async ({
         completed = completedSubagentIDs(newMessages);
       }
       for (const id of current) handledSubagents.add(id);
-      await client.session.wait({ sessionID: session.id });
+      await waitForSession(client, session.id);
       newMessages = await newSessionMessages(client, session.id, previousAssistantIDs);
       subagents = backgroundSubagentIDs(newMessages);
     }
@@ -448,6 +448,19 @@ const backgroundSubagentIDs = (messages: SessionMessageInfo[]) => {
   }
 
   return ids;
+};
+
+const waitForSession = async (client: OpenCodeClient, sessionID: string) => {
+  for (;;) {
+    try {
+      await client.session.wait({ sessionID });
+      return;
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      console.warn(`OpenCode wait connection failed for ${sessionID}; reconnecting`, error);
+      await sleep(1000);
+    }
+  }
 };
 
 const rejectPermissionRequests = async (
