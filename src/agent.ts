@@ -122,7 +122,7 @@ export const createAgent = (options: CreateAgentOptions) => {
         triggeringMessage: message,
         userTimezone: options.userTimezone,
       });
-      await thread.post(response);
+      await thread.post({ markdown: response });
     } catch (error) {
       console.error(error);
       outcome = 'x';

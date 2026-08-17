@@ -58,6 +58,7 @@ describe('Slack agent', () => {
       },
     } as unknown as OpenCodeClient;
     const adapter = new MockAdapter('remotecode');
+    const postMessage = vi.spyOn(adapter, 'postMessage');
     const bot = createAgent({
       adapters: { mock: adapter },
       allowedUsers: ['local-user'],
@@ -109,6 +110,10 @@ describe('Slack agent', () => {
       'eyes',
     ]);
     expect(adapter.outputs).toEqual(['response 1', 'response 2']);
+    expect(postMessage.mock.calls.map(([, message]) => message)).toEqual([
+      { markdown: 'response 1' },
+      { markdown: 'response 2' },
+    ]);
     expect(adapter.ephemeralOutputs).toEqual([
       {
         text: "To inspect this session locally, run:\n\n```\nopencode --session 'session-1'\n```",
