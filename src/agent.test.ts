@@ -28,6 +28,12 @@ describe('Slack agent', () => {
     const client = {
       generate: { text: vi.fn(async () => ({ text: 'Handle Slack requests' })) },
       message: { list: listMessages },
+      permission: {
+        list: vi.fn(async () => [
+          { action: 'external_directory', id: 'permission-1', resources: ['/original'] },
+        ]),
+        reply: vi.fn(async () => {}),
+      },
       session: {
         create: vi.fn(async () => ({ id: 'session-1' })),
         list: vi.fn(async () => ({ data: [], cursor: {} })),
@@ -88,6 +94,8 @@ describe('Slack agent', () => {
     expect(prompts[1]?.text).not.toContain('first request');
     expect(prompts[1]?.text).toContain('new context');
     expect(prompts[1]?.text).toContain('second request');
+    expect(prompts[0]?.text).toContain('Your filesystem boundary is the thread workspace at /tmp');
+    expect(prompts[1]?.text).toContain('Never inspect or access parent directories');
     expect(adapter.reactions.map((reaction) => reaction.emoji)).toEqual([
       'gear',
       'eyes',
@@ -116,6 +124,13 @@ describe('Slack agent', () => {
     expect(client.session.rename).toHaveBeenCalledWith({
       sessionID: 'session-1',
       title: '[mock] Handle Slack requests',
+    });
+    expect(client.permission.reply).toHaveBeenCalledWith({
+      message:
+        "This request was automatically rejected, because the user can't see the request on mock to approve it. User won't be able to approve permissions in this thread.",
+      reply: 'reject',
+      requestID: 'permission-1',
+      sessionID: 'session-1',
     });
   });
 
@@ -166,6 +181,7 @@ describe('Slack agent', () => {
       message: {
         list: vi.fn(async () => ({ data: [...messages].reverse(), cursor: {} })),
       },
+      permission: { list: vi.fn(async () => []), reply: vi.fn(async () => {}) },
       session: {
         create: vi.fn(async () => ({ id: 'session-1' })),
         list: vi.fn(async () => ({ data: [], cursor: {} })),

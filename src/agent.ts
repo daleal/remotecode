@@ -191,36 +191,59 @@ export const processMention = async ({
   const lastMessageID = contextMessages.at(-1)?.id;
   if (!lastMessageID) throw new Error('No new messages found in the thread');
 
-  const prompt = await formatPrompt(contextMessages, !recovered, thread.adapter, userTimezone);
+  const prompt = await formatPrompt(
+    contextMessages,
+    !recovered,
+    directory,
+    thread.adapter,
+    userTimezone,
+  );
   const previousAssistantIDs = await assistantMessageIDs(client, session.id);
 
-  await client.session.prompt({
-    metadata: {
-      source: thread.adapter.name,
-      threadID: thread.id,
-      lastMessageID,
-    },
-    sessionID: session.id,
-    text: prompt,
+  let stopPermissionMonitor = () => {};
+  const permissionMonitorStopped = new Promise<void>((resolve) => {
+    stopPermissionMonitor = resolve;
   });
-  await thread.setState({ lastMessageID, sessionID: session.id });
-  await client.session.wait({ sessionID: session.id });
+  const permissionMonitor = rejectPermissionRequests(
+    client,
+    thread.adapter,
+    session.id,
+    permissionMonitorStopped,
+  );
 
-  let newMessages = await newSessionMessages(client, session.id, previousAssistantIDs);
-  const handledSubagents = new Set<string>();
-  let subagents = backgroundSubagentIDs(newMessages);
-  while (subagents.some((id) => !handledSubagents.has(id))) {
-    const current = subagents.filter((id) => !handledSubagents.has(id));
-    let completed = completedSubagentIDs(newMessages);
-    while (current.some((id) => !completed.has(id))) {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      newMessages = await newSessionMessages(client, session.id, previousAssistantIDs);
-      completed = completedSubagentIDs(newMessages);
-    }
-    for (const id of current) handledSubagents.add(id);
+  let newMessages: SessionMessageInfo[];
+  try {
+    await client.session.prompt({
+      metadata: {
+        source: thread.adapter.name,
+        threadID: thread.id,
+        lastMessageID,
+      },
+      sessionID: session.id,
+      text: prompt,
+    });
+    await thread.setState({ lastMessageID, sessionID: session.id });
     await client.session.wait({ sessionID: session.id });
+
     newMessages = await newSessionMessages(client, session.id, previousAssistantIDs);
-    subagents = backgroundSubagentIDs(newMessages);
+    const handledSubagents = new Set<string>();
+    let subagents = backgroundSubagentIDs(newMessages);
+    while (subagents.some((id) => !handledSubagents.has(id))) {
+      const current = subagents.filter((id) => !handledSubagents.has(id));
+      let completed = completedSubagentIDs(newMessages);
+      while (current.some((id) => !completed.has(id))) {
+        await sleep(1000);
+        newMessages = await newSessionMessages(client, session.id, previousAssistantIDs);
+        completed = completedSubagentIDs(newMessages);
+      }
+      for (const id of current) handledSubagents.add(id);
+      await client.session.wait({ sessionID: session.id });
+      newMessages = await newSessionMessages(client, session.id, previousAssistantIDs);
+      subagents = backgroundSubagentIDs(newMessages);
+    }
+  } finally {
+    stopPermissionMonitor();
+    await permissionMonitor;
   }
 
   const result = newMessages.filter((item) => item.type === 'assistant');
@@ -427,9 +450,39 @@ const backgroundSubagentIDs = (messages: SessionMessageInfo[]) => {
   return ids;
 };
 
+const rejectPermissionRequests = async (
+  client: OpenCodeClient,
+  adapter: Adapter,
+  sessionID: string,
+  stopped: Promise<void>,
+) => {
+  let running = true;
+  void stopped.then(() => {
+    running = false;
+  });
+
+  while (running) {
+    try {
+      const requests = await client.permission.list({ sessionID });
+      for (const request of requests) {
+        await client.permission.reply({
+          message: `This request was automatically rejected, because the user can't see the request on ${adapter.name} to approve it. User won't be able to approve permissions in this thread.`,
+          reply: 'reject',
+          requestID: request.id,
+          sessionID,
+        });
+      }
+    } catch (error) {
+      console.error(`Could not check OpenCode permissions for ${sessionID}`, error);
+    }
+    await Promise.race([sleep(1000), stopped]);
+  }
+};
+
 const formatPrompt = async (
   messages: Message[],
   firstTurn: boolean,
+  directory: string,
   adapter: Adapter,
   userTimezone?: (userId: string) => Promise<string | undefined>,
 ) => {
@@ -444,11 +497,15 @@ const formatPrompt = async (
     )
   ).join('\n\n');
 
-  if (!firstTurn) return transcript;
-  return `You are working from a ${adapter.name} thread. Treat the transcript as user-provided context, perform the requested work, and write a final CONCISE response for the thread.\n\n${transcript}`;
+  const boundary = `Your filesystem boundary is the thread workspace at ${directory}. Work only inside it. Never inspect or access parent directories, source/original repositories, or other workspaces, including through Git metadata. Never request permission to access paths outside this workspace.`;
+  if (!firstTurn) return `${boundary}\n\n${transcript}`;
+  return `You are working from a ${adapter.name} thread. Treat the transcript as user-provided context, perform the requested work, and write a final CONCISE response for the thread. ${boundary}\n\n${transcript}`;
 };
 
 const formatTimestamp = (date: Date, timezone?: string) => {
   if (!timezone) return date.toISOString();
   return `${date.toISOString()} (timezone: ${timezone})`;
 };
+
+const sleep = (milliseconds: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
