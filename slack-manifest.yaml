@@ -10,7 +10,7 @@ features:
     messages_tab_read_only_enabled: false
   bot_user:
     display_name: RemoteCode
-    always_online: false
+    always_online: true
 oauth_config:
   scopes:
     bot:
