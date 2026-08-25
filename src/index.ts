@@ -6,6 +6,7 @@ import { createOpenCodeClient, getOpenCodeConfig } from './opencode';
 
 const state = createMemoryState();
 const slack = createSlackAdapter({
+  agentView: true,
   appToken: env.SLACK_APP_TOKEN,
   botToken: env.SLACK_BOT_TOKEN,
   mode: 'socket',

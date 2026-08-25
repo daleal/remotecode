@@ -2,21 +2,32 @@ display_information:
   name: RemoteCode
   description: Run OpenCode from tagged Slack threads
 features:
+  agent_view:
+    agent_description: Run agent tasks in isolated workspaces. Debug, investigate and build on any repo.
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
   bot_user:
     display_name: RemoteCode
-    always_online: true
+    always_online: false
 oauth_config:
   scopes:
     bot:
       - app_mentions:read
+      - assistant:write
       - channels:history
       - chat:write
       - groups:history
+      - im:history
       - reactions:write
       - users:read
 settings:
   event_subscriptions:
     bot_events:
+      - app_context_changed
+      - app_home_opened
       - app_mention
+      - message.im
   socket_mode_enabled: true
   token_rotation_enabled: false

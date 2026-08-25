@@ -1,8 +1,9 @@
 # RemoteCode
 
-A workspace-isolated Slack agent backed by an OpenCode v2 server. It responds only to
-`@mentions`, reacts with `:gear:` while setting up the thread workspace, `:eyes:` while working,
-and `:white_check_mark:` or `:x:` when finished. It creates one OpenCode session per Slack thread.
+A workspace-isolated Slack agent backed by an OpenCode v2 server. It responds to channel
+`@mentions` and direct messages, reacts with `:gear:` while setting up the thread workspace,
+`:eyes:` while working, and `:white_check_mark:` or `:x:` when finished. It creates one OpenCode
+session per Slack thread. Each top-level DM starts a new thread and the agent replies in that thread.
 
 Each new thread also gets an isolated Git workspace. Through OpenCode's remote shell API, RemoteCode
 discovers Git repositories directly under `REPOS_ROOT`, fetches each repository's `origin/main`, and
@@ -37,8 +38,9 @@ from OpenCode prompt metadata.
    server.
 6. Run `bun install`, then `bun run start`.
 
-Only `app_mention` is subscribed. Untagged thread replies are fetched as context when the next
-tag arrives, but never trigger the agent themselves.
+In channels, untagged thread replies are fetched as context when the next tag arrives, but never
+trigger the agent themselves. DMs do not require a tag. A DM thread reply continues that thread's
+session; a new top-level DM starts a separate session.
 
 ## Configuration
 
