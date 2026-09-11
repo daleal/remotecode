@@ -3,7 +3,6 @@ import type { ThreadState } from './thread-session';
 
 type BuildThreadPromptOptions = {
   adapterName: string;
-  directory: string;
   firstTurn: boolean;
   messages: Message[];
   userTimezone?: (userId: string) => Promise<string | undefined>;
@@ -32,7 +31,6 @@ export const messagesSince = async (thread: Thread<ThreadState>, lastMessageID?:
 
 export const buildThreadPrompt = async ({
   adapterName,
-  directory,
   firstTurn,
   messages,
   userTimezone,
@@ -48,9 +46,8 @@ export const buildThreadPrompt = async ({
     )
   ).join('\n\n');
 
-  const boundary = `Your filesystem boundary is the thread workspace at ${directory}. Work only inside it. Never inspect or access parent directories, source/original repositories, or other workspaces, including through Git metadata. Never request permission to access paths outside this workspace.`;
-  if (!firstTurn) return `${boundary}\n\n${transcript}`;
-  return `You are working from a ${adapterName} thread. Treat the transcript as user-provided context, perform the requested work, and write a final CONCISE response for the thread. ${boundary}\n\n${transcript}`;
+  if (!firstTurn) return transcript;
+  return `You are working from a ${adapterName} thread. Treat the transcript as user-provided context, perform the requested work, and write a final CONCISE response for the thread.\n\n${transcript}`;
 };
 
 const formatTimestamp = (date: Date, timezone?: string) => {

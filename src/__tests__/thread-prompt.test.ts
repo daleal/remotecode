@@ -50,14 +50,12 @@ describe('buildThreadPrompt', () => {
 
     const prompt = await buildThreadPrompt({
       adapterName: 'slack',
-      directory: '/workspaces/thread-1',
       firstTurn: true,
       messages: [message('one', 'Please investigate'), message('two', 'Build failed', true)],
       userTimezone,
     });
 
     expect(prompt).toContain('You are working from a slack thread.');
-    expect(prompt).toContain('filesystem boundary is the thread workspace at /workspaces/thread-1');
     expect(prompt).toContain(
       '[Message from Ada Lovelace (@ada) at 2026-08-17T12:00:00.000Z (timezone: Europe/London)]\nPlease investigate',
     );
@@ -70,12 +68,10 @@ describe('buildThreadPrompt', () => {
   it('omits first-turn instructions on later turns', async () => {
     const prompt = await buildThreadPrompt({
       adapterName: 'slack',
-      directory: '/workspace',
       firstTurn: false,
       messages: [message('one', 'Continue')],
     });
 
-    expect(prompt).not.toContain('You are working from a slack thread.');
-    expect(prompt).toContain('filesystem boundary is the thread workspace at /workspace');
+    expect(prompt).toBe('[Message from Ada Lovelace (@ada) at 2026-08-17T12:00:00.000Z]\nContinue');
   });
 });

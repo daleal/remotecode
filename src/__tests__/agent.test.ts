@@ -95,8 +95,6 @@ describe('Slack agent', () => {
     expect(prompts[1]?.text).not.toContain('first request');
     expect(prompts[1]?.text).toContain('new context');
     expect(prompts[1]?.text).toContain('second request');
-    expect(prompts[0]?.text).toContain('Your filesystem boundary is the thread workspace at /tmp');
-    expect(prompts[1]?.text).toContain('Never inspect or access parent directories');
     expect(adapter.reactions.map((reaction) => reaction.emoji)).toEqual([
       'gear',
       'eyes',

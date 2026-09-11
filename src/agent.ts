@@ -163,7 +163,6 @@ export const processMention = async ({
 
   const prompt = await buildThreadPrompt({
     adapterName: thread.adapter.name,
-    directory,
     firstTurn: session.created,
     messages: contextMessages,
     userTimezone,
