@@ -34,6 +34,7 @@ describe('Slack agent', () => {
         ]),
         reply: vi.fn(async () => {}),
       },
+      question: { list: vi.fn(async () => []), reply: vi.fn(async () => {}) },
       session: {
         create: vi.fn(async () => ({ id: 'session-1' })),
         list: vi.fn(async () => ({ data: [], cursor: {} })),
@@ -186,6 +187,7 @@ describe('Slack agent', () => {
         list: vi.fn(async () => ({ data: [...messages].reverse(), cursor: {} })),
       },
       permission: { list: vi.fn(async () => []), reply: vi.fn(async () => {}) },
+      question: { list: vi.fn(async () => []), reply: vi.fn(async () => {}) },
       session: {
         create: vi.fn(async () => ({ id: 'session-1' })),
         list: vi.fn(async () => ({ data: [], cursor: {} })),

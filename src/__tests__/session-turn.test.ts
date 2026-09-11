@@ -9,7 +9,7 @@ const metadata = {
 };
 
 describe('runSessionTurn', () => {
-  it('prompts the session, rejects permissions, and returns the final new response', async () => {
+  it('prompts the session, rejects permissions, answers questions, and returns the final new response', async () => {
     const messages: unknown[] = [
       {
         content: [{ text: 'Old response', type: 'text' }],
@@ -23,6 +23,12 @@ describe('runSessionTurn', () => {
       },
       permission: {
         list: vi.fn(async () => [{ id: 'permission-1' }]),
+        reply: vi.fn(async () => {}),
+      },
+      question: {
+        list: vi.fn(async () => [
+          { id: 'question-1', questions: [{ question: 'Which?' }, { question: 'Why?' }] },
+        ]),
         reply: vi.fn(async () => {}),
       },
       session: {
@@ -64,6 +70,14 @@ describe('runSessionTurn', () => {
       requestID: 'permission-1',
       sessionID: 'session-1',
     });
+    expect(client.question.reply).toHaveBeenCalledWith({
+      answers: [
+        [expect.stringContaining("user can't see it on slack")],
+        [expect.stringContaining("user can't see it on slack")],
+      ],
+      requestID: 'question-1',
+      sessionID: 'session-1',
+    });
   });
 
   it('reports the last assistant error when no text is returned', async () => {
@@ -85,6 +99,7 @@ describe('runSessionTurn', () => {
         })),
       },
       permission: { list: vi.fn(async () => []), reply: vi.fn() },
+      question: { list: vi.fn(async () => []), reply: vi.fn() },
       session: {
         prompt: vi.fn(async () => {
           prompted = true;

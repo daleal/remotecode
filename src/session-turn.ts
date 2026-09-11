@@ -20,15 +20,15 @@ export const runSessionTurn = async ({
   sessionID,
 }: RunSessionTurnOptions) => {
   const previousAssistantIDs = await assistantMessageIDs(client, sessionID);
-  let stopPermissionMonitor = () => {};
-  const permissionMonitorStopped = new Promise<void>((resolve) => {
-    stopPermissionMonitor = resolve;
+  let stopRequestMonitor = () => {};
+  const requestMonitorStopped = new Promise<void>((resolve) => {
+    stopRequestMonitor = resolve;
   });
-  const permissionMonitor = rejectPermissionRequests(
+  const requestMonitor = rejectBlockingRequests(
     client,
     adapterName,
     sessionID,
-    permissionMonitorStopped,
+    requestMonitorStopped,
   );
 
   let newMessages: SessionMessageInfo[];
@@ -53,8 +53,8 @@ export const runSessionTurn = async ({
       subagents = backgroundSubagentIDs(newMessages);
     }
   } finally {
-    stopPermissionMonitor();
-    await permissionMonitor;
+    stopRequestMonitor();
+    await requestMonitor;
   }
 
   const result = newMessages.filter((item) => item.type === 'assistant');
@@ -156,7 +156,7 @@ const waitForSession = async (client: OpenCodeClient, sessionID: string) => {
   }
 };
 
-const rejectPermissionRequests = async (
+const rejectBlockingRequests = async (
   client: OpenCodeClient,
   adapterName: string,
   sessionID: string,
@@ -168,20 +168,51 @@ const rejectPermissionRequests = async (
   });
 
   while (running) {
-    try {
-      const requests = await client.permission.list({ sessionID });
-      for (const request of requests) {
-        await client.permission.reply({
-          message: `This request was automatically rejected, because the user can't see the request on ${adapterName} to approve it. User won't be able to approve permissions in this thread.`,
-          reply: 'reject',
-          requestID: request.id,
-          sessionID,
-        });
-      }
-    } catch (error) {
-      console.error(`Could not check OpenCode permissions for ${sessionID}`, error);
-    }
+    await Promise.all([
+      rejectPermissionRequests(client, adapterName, sessionID),
+      answerQuestionRequests(client, adapterName, sessionID),
+    ]);
     await Promise.race([sleep(1000), stopped]);
+  }
+};
+
+const rejectPermissionRequests = async (
+  client: OpenCodeClient,
+  adapterName: string,
+  sessionID: string,
+) => {
+  try {
+    const requests = await client.permission.list({ sessionID });
+    for (const request of requests) {
+      await client.permission.reply({
+        message: `This request was automatically rejected, because the user can't see the request on ${adapterName} to approve it. User won't be able to approve permissions in this thread.`,
+        reply: 'reject',
+        requestID: request.id,
+        sessionID,
+      });
+    }
+  } catch (error) {
+    console.error(`Could not check OpenCode permissions for ${sessionID}`, error);
+  }
+};
+
+const answerQuestionRequests = async (
+  client: OpenCodeClient,
+  adapterName: string,
+  sessionID: string,
+) => {
+  const answer = `This question was automatically answered, because the user can't see it on ${adapterName}. Questions can't be answered in this thread. Ask the user in your final response instead.`;
+  try {
+    const requests = await client.question.list({ sessionID });
+    for (const request of requests) {
+      await client.question.reply({
+        answers: request.questions.map(() => [answer]),
+        requestID: request.id,
+        sessionID,
+      });
+    }
+  } catch (error) {
+    console.error(`Could not check OpenCode questions for ${sessionID}`, error);
   }
 };
 
