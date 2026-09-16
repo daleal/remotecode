@@ -13,11 +13,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@chat-adapter/slack": "4.38.0",
-    "@chat-adapter/state-memory": "4.38.0",
-    "@opencode/client": "2.0.3",
-    "chat": "4.38.0",
-    "zod": "4.4.3"
+    "@chat-adapter/slack": "^4.38.0",
+    "@chat-adapter/state-memory": "^4.38.0",
+    "@opencode/client": "^2.0.3",
+    "chat": "^4.38.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@daleal/oxd-config-ts": "^0.1.0",
