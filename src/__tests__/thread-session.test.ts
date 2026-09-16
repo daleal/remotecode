@@ -1,4 +1,4 @@
-import type { OpenCodeClient } from '@opencode-ai/client';
+import type { OpenCodeClient } from '@opencode/client';
 import { describe, expect, it, vi } from 'vitest';
 import { getOrCreateThreadSession } from '../thread-session';
 
@@ -113,6 +113,7 @@ describe('getOrCreateThreadSession', () => {
       agent: 'build',
       location: { directory: '/workspace' },
       model: config.model,
+      permissions: [{ action: 'question', resource: '*', effect: 'deny' }],
       title: 'thread-1',
     });
   });

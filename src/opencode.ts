@@ -1,4 +1,4 @@
-import { OpenCode, type OpenCodeClient } from '@opencode-ai/client';
+import { OpenCode, type OpenCodeClient } from '@opencode/client';
 import { env } from '~/config/env';
 
 export type OpenCodeConfig = {

@@ -1,4 +1,4 @@
-import type { OpenCodeClient } from '@opencode-ai/client';
+import type { OpenCodeClient } from '@opencode/client';
 import type { OpenCodeConfig } from './opencode';
 
 const TITLE_PROMPT = `You are a title generator. You output ONLY a thread title. Nothing else.
@@ -49,7 +49,6 @@ Your output must be:
 type GenerateAndApplySessionTitleOptions = {
   adapterName: string;
   client: OpenCodeClient;
-  directory: string;
   model: OpenCodeConfig['smallModel'];
   prompt: string;
   sessionID: string;
@@ -58,14 +57,12 @@ type GenerateAndApplySessionTitleOptions = {
 export const generateAndApplySessionTitle = async ({
   adapterName,
   client,
-  directory,
   model,
   prompt,
   sessionID,
 }: GenerateAndApplySessionTitleOptions) => {
   try {
     const generated = await client.generate.text({
-      location: { directory },
       model,
       prompt: `${TITLE_PROMPT}\n\n${prompt}`,
     });

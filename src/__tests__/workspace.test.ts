@@ -1,4 +1,4 @@
-import type { OpenCodeClient } from '@opencode-ai/client';
+import type { OpenCodeClient } from '@opencode/client';
 import { describe, expect, it, vi } from 'vitest';
 import { createThreadWorkspace } from '../workspace';
 

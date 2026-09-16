@@ -1,4 +1,4 @@
-import type { OpenCodeClient } from '@opencode-ai/client';
+import type { OpenCodeClient } from '@opencode/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { generateAndApplySessionTitle } from '../session-title';
 
@@ -16,14 +16,12 @@ describe('generateAndApplySessionTitle', () => {
     await generateAndApplySessionTitle({
       adapterName: 'slack',
       client,
-      directory: '/workspace',
       model: { id: 'small', providerID: 'provider' },
       prompt: 'User transcript',
       sessionID: 'session-1',
     });
 
     expect(client.generate.text).toHaveBeenCalledWith({
-      location: { directory: '/workspace' },
       model: { id: 'small', providerID: 'provider' },
       prompt: expect.stringMatching(/You are a title generator[\s\S]*User transcript$/),
     });
@@ -45,7 +43,6 @@ describe('generateAndApplySessionTitle', () => {
       generateAndApplySessionTitle({
         adapterName: 'slack',
         client,
-        directory: '/workspace',
         model: { id: 'small', providerID: 'provider' },
         prompt: 'User transcript',
         sessionID: 'session-1',

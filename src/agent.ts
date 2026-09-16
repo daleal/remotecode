@@ -1,4 +1,4 @@
-import type { OpenCodeClient } from '@opencode-ai/client';
+import type { OpenCodeClient } from '@opencode/client';
 import { Chat, type Adapter, type Message, type StateAdapter, type Thread } from 'chat';
 import type { OpenCodeConfig } from './opencode';
 import { generateAndApplySessionTitle } from './session-title';
@@ -180,7 +180,6 @@ export const processMention = async ({
     await generateAndApplySessionTitle({
       adapterName: thread.adapter.name,
       client,
-      directory,
       model: config.smallModel,
       prompt,
       sessionID: session.sessionID,

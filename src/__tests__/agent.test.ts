@@ -1,5 +1,5 @@
 import { createMemoryState } from '@chat-adapter/state-memory';
-import type { OpenCodeClient } from '@opencode-ai/client';
+import type { OpenCodeClient } from '@opencode/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAgent } from '../agent';
 import { MockAdapter } from '../mock-adapter';
@@ -121,7 +121,6 @@ describe('Slack agent', () => {
     ]);
     expect(listMessages.mock.calls.some(([input]) => input.cursor === 'next-page')).toBe(true);
     expect(client.generate.text).toHaveBeenCalledWith({
-      location: { directory: '/tmp' },
       model: { id: 'small-model', providerID: 'provider' },
       prompt: expect.stringContaining('You are a title generator.'),
     });

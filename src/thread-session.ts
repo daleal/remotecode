@@ -1,4 +1,4 @@
-import type { OpenCodeClient } from '@opencode-ai/client';
+import type { OpenCodeClient } from '@opencode/client';
 import type { OpenCodeConfig } from './opencode';
 
 export type ThreadState = {
@@ -39,6 +39,7 @@ export const getOrCreateThreadSession = async ({
     agent: config.agent,
     location: { directory },
     model: config.model,
+    permissions: [{ action: 'question', resource: '*', effect: 'deny' }],
     title: threadID,
   });
   return { created: true, lastMessageID: undefined, sessionID: session.id };

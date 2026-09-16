@@ -1,4 +1,4 @@
-import type { OpenCodeClient, SessionMessageInfo } from '@opencode-ai/client';
+import type { OpenCodeClient, SessionMessageInfo } from '@opencode/client';
 
 type RunSessionTurnOptions = {
   adapterName: string;
@@ -168,10 +168,7 @@ const rejectBlockingRequests = async (
   });
 
   while (running) {
-    await Promise.all([
-      rejectPermissionRequests(client, adapterName, sessionID),
-      answerQuestionRequests(client, adapterName, sessionID),
-    ]);
+    await rejectPermissionRequests(client, adapterName, sessionID);
     await Promise.race([sleep(1000), stopped]);
   }
 };
@@ -193,26 +190,6 @@ const rejectPermissionRequests = async (
     }
   } catch (error) {
     console.error(`Could not check OpenCode permissions for ${sessionID}`, error);
-  }
-};
-
-const answerQuestionRequests = async (
-  client: OpenCodeClient,
-  adapterName: string,
-  sessionID: string,
-) => {
-  const answer = `This question was automatically answered, because the user can't see it on ${adapterName}. Questions can't be answered in this thread. Ask the user in your final response instead.`;
-  try {
-    const requests = await client.question.list({ sessionID });
-    for (const request of requests) {
-      await client.question.reply({
-        answers: request.questions.map(() => [answer]),
-        requestID: request.id,
-        sessionID,
-      });
-    }
-  } catch (error) {
-    console.error(`Could not check OpenCode questions for ${sessionID}`, error);
   }
 };
 
