@@ -183,7 +183,7 @@ const rejectPermissionRequests = async (
     for (const request of requests) {
       await client.permission.reply({
         message: `This request was automatically rejected, because the user can't see the request on ${adapterName} to approve it. User won't be able to approve permissions in this thread.`,
-        reply: 'reject',
+        decision: 'reject',
         requestID: request.id,
         sessionID,
       });

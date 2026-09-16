@@ -15,7 +15,7 @@
   "dependencies": {
     "@chat-adapter/slack": "^4.38.0",
     "@chat-adapter/state-memory": "^4.38.0",
-    "@opencode/client": "^2.0.3",
+    "@opencode/client": "^2.0.4",
     "chat": "^4.38.0",
     "zod": "^4.4.3"
   },

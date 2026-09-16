@@ -54,7 +54,7 @@ describe('Slack agent', () => {
             },
           );
         }),
-        rename: vi.fn(async () => {}),
+        update: vi.fn(async () => {}),
         wait: vi.fn(async () => {}),
       },
     } as unknown as OpenCodeClient;
@@ -124,14 +124,14 @@ describe('Slack agent', () => {
       model: { id: 'small-model', providerID: 'provider' },
       prompt: expect.stringContaining('You are a title generator.'),
     });
-    expect(client.session.rename).toHaveBeenCalledWith({
+    expect(client.session.update).toHaveBeenCalledWith({
       sessionID: 'session-1',
       title: '[mock] Handle Slack requests',
     });
     expect(client.permission.reply).toHaveBeenCalledWith({
       message:
         "This request was automatically rejected, because the user can't see the request on mock to approve it. User won't be able to approve permissions in this thread.",
-      reply: 'reject',
+      decision: 'reject',
       requestID: 'permission-1',
       sessionID: 'session-1',
     });
@@ -193,7 +193,7 @@ describe('Slack agent', () => {
         prompt: vi.fn(async (input) => {
           messages.push({ id: 'user-1', metadata: input.metadata, type: 'user' });
         }),
-        rename: vi.fn(async () => {}),
+        update: vi.fn(async () => {}),
         wait: vi.fn(async () => {
           waits += 1;
           if (waits === 1) {

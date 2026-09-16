@@ -60,7 +60,7 @@ describe('runSessionTurn', () => {
     });
     expect(client.permission.reply).toHaveBeenCalledWith({
       message: expect.stringContaining("user can't see the request on slack"),
-      reply: 'reject',
+      decision: 'reject',
       requestID: 'permission-1',
       sessionID: 'session-1',
     });

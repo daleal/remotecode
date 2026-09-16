@@ -38,7 +38,7 @@ const bot = createAgent({
   userName: env.SLACK_BOT_NAME,
 });
 
-await openCode.health.get();
+await openCode.server.status();
 await bot.initialize();
 console.log(`@${env.SLACK_BOT_NAME} is connected to Slack and ${env.OPENCODE_URL}`);
 
