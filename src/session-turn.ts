@@ -166,11 +166,40 @@ const rejectBlockingRequests = async (
   void stopped.then(() => {
     running = false;
   });
+  const sessionIDs = new Set([sessionID]);
 
   while (running) {
-    await rejectPermissionRequests(client, adapterName, sessionID);
+    for (const id of sessionIDs) {
+      if (!running) break;
+      await rejectPermissionRequests(client, adapterName, id);
+      const childIDs = await discoverSubagents(client, id, () => running);
+      for (const childID of childIDs) sessionIDs.add(childID);
+    }
     await Promise.race([sleep(1000), stopped]);
   }
+};
+
+const discoverSubagents = async (
+  client: OpenCodeClient,
+  parentID: string,
+  isRunning: () => boolean,
+) => {
+  const childIDs: string[] = [];
+  try {
+    let cursor: string | undefined;
+    do {
+      const page = await client.session.list({
+        parentID,
+        limit: 100,
+        ...(cursor ? { cursor } : { order: 'desc' }),
+      });
+      childIDs.push(...page.data.map((child) => child.id));
+      cursor = page.cursor.next ?? undefined;
+    } while (isRunning() && cursor);
+  } catch (error) {
+    console.error(`Could not discover OpenCode subagents for ${parentID}`, error);
+  }
+  return childIDs;
 };
 
 const rejectPermissionRequests = async (
