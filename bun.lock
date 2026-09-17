@@ -7,7 +7,7 @@
       "dependencies": {
         "@chat-adapter/slack": "^4.38.0",
         "@chat-adapter/state-memory": "^4.38.0",
-        "@opencode/client": "^2.0.4",
+        "@opencode/client": "^2.0.6",
         "chat": "^4.38.0",
         "zod": "^4.4.3",
       },
@@ -48,11 +48,11 @@
 
     "@msgpackr-extract/msgpackr-extract-win32-x64": ["@msgpackr-extract/msgpackr-extract-win32-x64@3.0.4", "", { "os": "win32", "cpu": "x64" }, "sha512-CmCXPQrkbwExx3j946/PtHWHbYJiCRBRDl4BlkRQcJB/YOwQxJRTpoo7aTsortjgoJ1x7opzTSxn7C+ASSLVjQ=="],
 
-    "@opencode/client": ["@opencode/client@2.0.4", "", { "dependencies": { "@opencode/protocol": "2.0.4", "@opencode/schema": "2.0.4" }, "peerDependencies": { "effect": "4.0.0-rc.112", "solid-js": ">=1.9.0" }, "optionalPeers": ["effect", "solid-js"] }, "sha512-GBFWT2os+gEtGXpHRvDUNkf0H9x9njDUVbUvvc4drH2CuAihVcHqdi9Wm4UiwkBrSLjrKPs4U1NJBh2Z7/x4tQ=="],
+    "@opencode/client": ["@opencode/client@2.0.6", "", { "dependencies": { "@opencode/protocol": "2.0.6", "@opencode/schema": "2.0.6" }, "peerDependencies": { "effect": "4.0.0-rc.112", "solid-js": ">=1.9.0" }, "optionalPeers": ["effect", "solid-js"] }, "sha512-yS8Ztw5KJzoY94GTiEmaX+2OqJYVVdc2Pyj8joNvmFywMfNzhS5aqqX+LpprlZdiDHKBLN9GhMU775TRPLol0A=="],
 
-    "@opencode/protocol": ["@opencode/protocol@2.0.4", "", { "dependencies": { "@opencode/schema": "2.0.4", "effect": "4.0.0-rc.112" } }, "sha512-uWe2dmMouprSkfBu29XLR6GCWckkhm0YOo9ve07kTRqJCSoJzgQDF/8pouWG0cDCJ6oWj3bRQajXriBQyWSpUw=="],
+    "@opencode/protocol": ["@opencode/protocol@2.0.6", "", { "dependencies": { "@opencode/schema": "2.0.6", "effect": "4.0.0-rc.112" } }, "sha512-31pt2SC2/urvitx8q8A0i0IwewwAu70/knkSfY9NFhZyLfggfNrPMUvlzMV0rwbBgubXbyRFRshU6B2tX/6czQ=="],
 
-    "@opencode/schema": ["@opencode/schema@2.0.4", "", { "dependencies": { "@standard-schema/spec": "1.1.0", "effect": "4.0.0-rc.112" } }, "sha512-UyGcCsRb2hTH98rnBqfJogFve8kJsIbsEreRxqhkBIEGrtDTqcUd5NnqB7qlJp2khesMvpOH0GmCHlgz44C+uQ=="],
+    "@opencode/schema": ["@opencode/schema@2.0.6", "", { "dependencies": { "@standard-schema/spec": "1.1.0", "effect": "4.0.0-rc.112" } }, "sha512-oJC1Uc1ZhqQ5fBUhRza5tFc4Y8UKy0bWxpOv4f9qm6VCs16xgNGPi5Dts4bM29KbtfARr3W926tHvk7BxzUf9A=="],
 
     "@oxc-project/types": ["@oxc-project/types@0.144.0", "", {}, "sha512-nuhZIOLuI6TFQ32I/WnUx+SCPY7SdSKwgnFHydAuoS1+Z4BRcaP+RRJmGzl9lw+0OFF7UmaESf7KQRXaNLHypg=="],
 

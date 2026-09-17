@@ -16,7 +16,7 @@ const bot = createAgent({
   userName: env.SLACK_BOT_NAME,
 });
 
-await openCode.server.status();
+await openCode.server.info();
 await bot.initialize();
 
 const terminal = createInterface({ input: process.stdin, output: process.stdout });
