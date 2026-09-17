@@ -41,7 +41,11 @@ export const buildThreadPrompt = async ({
         const timezone = await userTimezone?.(message.author.userId);
         const timestamp = formatTimestamp(message.metadata.dateSent, timezone);
         const botTag = message.author.isBot ? ', bot' : '';
-        return `[Message from ${message.author.fullName} (@${message.author.userName}${botTag}) at ${timestamp}]\n${message.text}`;
+        const links = [...new Set((message.links ?? []).map((link) => link.url))].filter(
+          (url) => !message.text.includes(url),
+        );
+        const content = [message.text, ...links].filter(Boolean).join('\n');
+        return `[Message from ${message.author.fullName} (@${message.author.userName}${botTag}) at ${timestamp}]\n${content}`;
       }),
     )
   ).join('\n\n');

@@ -1,3 +1,4 @@
+import { createSlackAdapter } from '@chat-adapter/slack';
 import type { Message, Thread } from 'chat';
 import { describe, expect, it, vi } from 'vitest';
 import { buildThreadPrompt, messagesSince } from '../thread-prompt';
@@ -43,6 +44,39 @@ describe('messagesSince', () => {
 });
 
 describe('buildThreadPrompt', () => {
+  it('preserves a forwarded Slack message link from its attachment', async () => {
+    const slack = createSlackAdapter({ botToken: 'test-token', signingSecret: 'test-secret' });
+    const url = 'https://example.slack.com/archives/C123/p1786968000000000';
+    const forwarded = slack.parseMessage({
+      type: 'message',
+      channel: 'D123',
+      ts: '1786968000.000001',
+      user: 'U123',
+      text: 'Please investigate this thread',
+      attachments: [{ from_url: url, text: 'Original message', is_msg_unfurl: true }],
+    });
+
+    const prompt = await buildThreadPrompt({
+      adapterName: 'slack',
+      firstTurn: false,
+      messages: [forwarded],
+    });
+
+    expect(prompt).toContain(`Please investigate this thread\n${url}`);
+  });
+
+  it('includes links without commentary and avoids duplicate URLs', async () => {
+    const url = 'https://example.slack.com/archives/C123/p1786968000000000';
+    const forwarded = message('one', '');
+    forwarded.links = [{ url }, { url }];
+    const options = { adapterName: 'slack', firstTurn: false, messages: [forwarded] };
+
+    expect((await buildThreadPrompt(options)).split(url)).toHaveLength(2);
+
+    forwarded.text = `Investigate ${url}`;
+    expect((await buildThreadPrompt(options)).split(url)).toHaveLength(2);
+  });
+
   it('formats attributed messages and first-turn instructions', async () => {
     const userTimezone = vi.fn(async (userId: string) =>
       userId === 'user-1' ? 'Europe/London' : undefined,
