@@ -1,15 +1,45 @@
 # RemoteCode
 
-A workspace-isolated Slack agent backed by an OpenCode v2 server. It responds to channel
-`@mentions` and direct messages, reacts with `:gear:` while setting up the thread workspace,
-`:eyes:` while working, and `:white_check_mark:` or `:x:` when finished. It creates one OpenCode
-session per Slack thread. Each top-level DM starts a new thread and the agent replies in that thread.
+A coding agent you talk to in Slack, powered by an OpenCode v2 server.
+Mention it in a channel or send it a DM. It works on your repositories and replies in the thread.
 
-Each new thread also gets an isolated Git workspace. Through OpenCode's remote shell API, RemoteCode
-discovers Git repositories directly under `REPOS_ROOT`, fetches each repository's `origin/main`, and
-creates one detached worktree per repository under `WORKSPACE_ROOT/sessions`.
-Existing threads keep their original worktrees and changes. RemoteCode itself needs no filesystem
-access to either path; both paths belong to the machine running the OpenCode server.
+## From Slack to code
+
+```mermaid
+flowchart TD
+    message["Mention RemoteCode or send a DM"] --> bot["RemoteCode routes the message"]
+    bot --> thread{"New thread?"}
+    subgraph server["OpenCode server"]
+        thread -->|Yes| create["Create isolated Git worktrees<br/>and an OpenCode session"]
+        thread -->|No| resume["Reuse the thread's workspace<br/>and session"]
+        create --> agent["Agent works on your request"]
+        resume --> agent
+    end
+    agent --> reply["RemoteCode posts the reply<br/>in the same Slack thread"]
+```
+
+Slack reactions track progress: ⚙️ setting up → 👀 working → ✅ finished or ❌ failed.
+
+**One thread, one session, one workspace.** Follow-ups keep the conversation history and code
+changes. A new top-level DM starts a separate thread.
+
+```text
+Slack                         OpenCode server
+Thread A ──────────────────── Session A + workspace A
+                              ├── repo-one/  (Git worktree)
+                              └── repo-two/  (Git worktree)
+Thread B ──────────────────── Session B + workspace B
+                              ├── repo-one/  (Git worktree)
+                              └── repo-two/  (Git worktree)
+```
+
+## Git workspaces
+
+For each new thread, RemoteCode uses OpenCode's remote shell API to discover Git repositories
+directly under `REPOS_ROOT`, fetch each repository's `origin/main`, and create one detached
+worktree per repository under `WORKSPACE_ROOT/sessions`.
+Existing threads keep their original worktrees and changes. Both paths live on the OpenCode
+server's machine; RemoteCode needs no filesystem access to them.
 
 Repositories must be immediate children of `REPOS_ROOT`, have an `origin` remote, and expose
 `origin/main`. The checked-out branch and files in each source working copy are never changed.
