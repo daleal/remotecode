@@ -3,6 +3,10 @@
 A coding agent you talk to in Slack, powered by an OpenCode v2 server.
 Mention it in a channel or send it a DM. It works on your repositories and replies in the thread.
 
+> [!IMPORTANT]
+> Parts of this codebase are fully vibed. Don't trust it blindly: review the code and test it
+> before giving it access to repositories or credentials you care about.
+
 ## From Slack to code
 
 ```mermaid
@@ -32,6 +36,29 @@ Thread B ──────────────────── Session B 
                               ├── repo-one/  (Git worktree)
                               └── repo-two/  (Git worktree)
 ```
+
+## How to make it more powerful
+
+Give the agent access to the tools you use to investigate problems. OpenCode v2 uses
+[Code Mode for MCP servers](https://opencode.ai/v2/docs/mcp-servers) by default, so agents can
+discover and call tools without loading every tool's full schema into the context window up
+front. That makes MCPs a relatively cheap way to give the agent more capabilities.
+
+A useful starting set:
+
+- A Slack MCP server to search past discussions, incident threads, and decisions beyond the
+  current conversation.
+- Observability MCP servers for error tracking, logs, metrics, and traces, so the agent can
+  connect a reported symptom to what's actually failing.
+- Infrastructure CLIs on the OpenCode server's machine to inspect services, deployments,
+  and running workloads.
+- A database or warehouse CLI to query analytics data and check how many users or events
+  a problem affects.
+
+Configure MCP servers in OpenCode and make the CLIs available and authenticated on its host.
+Together with your repositories, these tools let the agent go from a Slack bug report to the
+relevant discussion, production evidence, and source code in one thread. That's where RemoteCode
+gets especially useful for debugging and quick fixes.
 
 ## Git workspaces
 
