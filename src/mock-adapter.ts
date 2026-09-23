@@ -55,7 +55,7 @@ export class MockAdapter implements Adapter<MockThreadID, MockRawMessage> {
     const message = this.makeMessage(threadId, rendered, false, undefined, undefined, isBot);
     this.messages(threadId).push(message);
 
-    if (mentioned) await this.chat.processMessage(this, threadId, message);
+    await this.chat.processMessage(this, threadId, message);
   }
 
   async addReaction(_threadId: string, messageId: string, emoji: string) {

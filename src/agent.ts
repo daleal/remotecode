@@ -3,6 +3,7 @@ import { Chat, type Adapter, type Message, type StateAdapter, type Thread } from
 import type { OpenCodeConfig } from './opencode';
 import { generateAndApplySessionTitle } from './session-title';
 import { runSessionTurn } from './session-turn';
+import { shouldRespond } from './should-respond';
 import { buildThreadPrompt, messagesSince } from './thread-prompt';
 import { getOrCreateThreadSession, type ThreadState } from './thread-session';
 import { createThreadWorkspace } from './workspace';
@@ -45,8 +46,11 @@ export const createAgent = (options: CreateAgentOptions) => {
     userName: options.userName,
   });
 
-  bot.onNewMention(async (thread, message) => {
+  const handleMessage = async (thread: Thread<ThreadState>, message: Message) => {
     if (!options.allowedUsers.includes(message.author.userId)) return;
+    if (!(thread.isDM || message.isMention || (await shouldRespond(thread, message)))) return;
+
+    await thread.subscribe();
 
     const hasSession = Boolean((await thread.state)?.sessionID);
     let processingReaction = hasSession ? 'eyes' : 'gear';
@@ -93,7 +97,10 @@ export const createAgent = (options: CreateAgentOptions) => {
       from: processingReaction,
       to: outcome,
     });
-  });
+  };
+
+  bot.onNewMention(handleMessage);
+  bot.onSubscribedMessage(handleMessage);
 
   return bot;
 };

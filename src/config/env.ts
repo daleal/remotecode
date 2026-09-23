@@ -19,6 +19,8 @@ const envSchema = zod.object({
   REPOS_ROOT: zod.string().optional().default('~/repos'),
   WORKSPACE_ROOT: zod.string().optional().default('~/remotecode'),
 
+  OPENROUTER_API_KEY: zod.string(),
+
   OPENCODE_URL: zod.url().optional().default('http://127.0.0.1:4096'),
   OPENCODE_AGENT: zod.string().optional().default('build'),
   OPENCODE_MODEL: modelSchema.optional().default({ providerID: 'openai', id: 'gpt-5.6-sol' }),

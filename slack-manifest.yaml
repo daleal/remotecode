@@ -28,6 +28,8 @@ settings:
       - app_context_changed
       - app_home_opened
       - app_mention
+      - message.channels
+      - message.groups
       - message.im
   socket_mode_enabled: true
   token_rotation_enabled: false

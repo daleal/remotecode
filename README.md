@@ -19,7 +19,7 @@ local `main` branch. Other fetch errors remain fatal.
 ## How Thread Context Works
 
 The first mention sends every message except RemoteCode's own messages in the Slack thread to a new
-OpenCode session. Each later mention sends only messages added since the previous turn. OpenCode
+OpenCode session. Each later message sends only messages added since the previous turn. OpenCode
 retains its own assistant and tool history, so prior content is neither duplicated nor reordered
 and the model's prompt prefix remains cacheable.
 
@@ -38,9 +38,19 @@ from OpenCode prompt metadata.
    server.
 6. Run `bun install`, then `bun run start`.
 
-In channels, untagged thread replies are fetched as context when the next tag arrives, but never
-trigger the agent themselves. DMs do not require a tag. A DM thread reply continues that thread's
-session; a new top-level DM starts a separate session.
+In channels, a mention subscribes the app to the thread. Mentions always trigger the agent;
+untagged replies from allowed users are evaluated by Jev (`~typesafe/jev-latest`) through OpenRouter
+using AI SDK's `experimental_evaluate`. The gate uses up to 20 recent messages, including the
+assistant's replies. It separately evaluates whether a response/action is needed, whether the bot
+is addressed, whether its task is being continued, and whether someone else is the exclusive
+recipient. It requires the first and either the second or third (each at probability ≥ 0.7),
+and skips replies when the exclusive-other-recipient probability is ≥ 0.7. Evaluation errors or timeouts
+skip the reply and are logged. DMs bypass evaluation. Subscriptions are kept in memory, so
+after a restart, tag the app again to resume listening. Existing Slack apps must enable the
+`message.channels` and `message.groups` bot events from the manifest.
+
+DMs do not require a tag. A DM thread reply continues that thread's session; a new top-level DM
+starts a separate session.
 
 ## Configuration
 
@@ -53,6 +63,7 @@ session; a new top-level DM starts a separate session.
 | `OPENCODE_URL`         | `http://127.0.0.1:4096` | OpenCode v2 server                          |
 | `REPOS_ROOT`           | `~/repos`               | Root containing source Git repositories     |
 | `WORKSPACE_ROOT`       | `~/remotecode`          | Isolated thread workspaces                  |
+| `OPENROUTER_API_KEY`   | required                | OpenRouter key for the Jev response gate    |
 | `OPENCODE_AGENT`       | `build`                 | OpenCode agent                              |
 | `OPENCODE_MODEL`       | `openai/gpt-5.6-sol`    | Main model in `provider/model` form         |
 | `OPENCODE_SMALL_MODEL` | `openai/gpt-5.6-luna`   | Utility model in `provider/model` form      |
@@ -62,11 +73,11 @@ session; a new top-level DM starts a separate session.
 
 ## Local Mock
 
-After configuring `OPENCODE_PASSWORD`, run `bun run dev` to exercise the full Chat SDK and OpenCode
+After configuring `OPENCODE_PASSWORD` and `OPENROUTER_API_KEY`, run `bun run dev` to exercise the full Chat SDK and OpenCode
 path without Slack credentials. Every normal line is treated as a mention. Useful commands:
 
 ```text
-/say untagged context that should not trigger the agent
+/say untagged message (evaluated after the thread's first mention)
 /thread another-thread
 /quit
 ```
