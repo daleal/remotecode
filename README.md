@@ -95,8 +95,8 @@ starts a separate session.
 | `WORKSPACE_ROOT`       | `~/remotecode`          | Isolated thread workspaces                                                |
 | `OPENROUTER_API_KEY`   | optional                | Enables additional smart features like responding to unmentioned messages |
 | `OPENCODE_AGENT`       | `build`                 | OpenCode agent                                                            |
-| `OPENCODE_MODEL`       | `openai/gpt-5.6-sol`    | Main model in `provider/model` form                                       |
-| `OPENCODE_SMALL_MODEL` | `openai/gpt-5.6-luna`   | Utility model in `provider/model` form                                    |
+| `OPENCODE_MODEL`       | `openai/gpt-6-sol-fast` | Main model in `provider/model` form                                       |
+| `OPENCODE_SMALL_MODEL` | `openai/gpt-6-luna`     | Utility model in `provider/model` form                                    |
 | `OPENCODE_EFFORT`      | `medium`                | Model variant/effort, such as `high`                                      |
 | `OPENCODE_USERNAME`    | `opencode`              | OpenCode Basic auth username                                              |
 | `OPENCODE_PASSWORD`    | required                | OpenCode Basic auth password                                              |
