@@ -54,26 +54,26 @@ starts a separate session.
 
 ## Configuration
 
-| Variable               | Default                 | Purpose                                     |
-| ---------------------- | ----------------------- | ------------------------------------------- |
-| `SLACK_BOT_TOKEN`      | required                | Single-workspace bot token                  |
-| `SLACK_APP_TOKEN`      | required                | Socket Mode app token                       |
-| `SLACK_BOT_NAME`       | `remotecode`            | Mention username used by Chat SDK           |
-| `ALLOWED_SLACK_USERS`  | empty                   | Allowed user IDs; empty denies all mentions |
-| `OPENCODE_URL`         | `http://127.0.0.1:4096` | OpenCode v2 server                          |
-| `REPOS_ROOT`           | `~/repos`               | Root containing source Git repositories     |
-| `WORKSPACE_ROOT`       | `~/remotecode`          | Isolated thread workspaces                  |
-| `OPENROUTER_API_KEY`   | required                | OpenRouter key for the Jev response gate    |
-| `OPENCODE_AGENT`       | `build`                 | OpenCode agent                              |
-| `OPENCODE_MODEL`       | `openai/gpt-5.6-sol`    | Main model in `provider/model` form         |
-| `OPENCODE_SMALL_MODEL` | `openai/gpt-5.6-luna`   | Utility model in `provider/model` form      |
-| `OPENCODE_EFFORT`      | `medium`                | Model variant/effort, such as `high`        |
-| `OPENCODE_USERNAME`    | `opencode`              | OpenCode Basic auth username                |
-| `OPENCODE_PASSWORD`    | required                | OpenCode Basic auth password                |
+| Variable               | Default                 | Purpose                                                                   |
+| ---------------------- | ----------------------- | ------------------------------------------------------------------------- |
+| `SLACK_BOT_TOKEN`      | required                | Single-workspace bot token                                                |
+| `SLACK_APP_TOKEN`      | required                | Socket Mode app token                                                     |
+| `SLACK_BOT_NAME`       | `remotecode`            | Mention username used by Chat SDK                                         |
+| `ALLOWED_SLACK_USERS`  | empty                   | Allowed user IDs; empty denies all mentions                               |
+| `OPENCODE_URL`         | `http://127.0.0.1:4096` | OpenCode v2 server                                                        |
+| `REPOS_ROOT`           | `~/repos`               | Root containing source Git repositories                                   |
+| `WORKSPACE_ROOT`       | `~/remotecode`          | Isolated thread workspaces                                                |
+| `OPENROUTER_API_KEY`   | optional                | Enables additional smart features like responding to unmentioned messages |
+| `OPENCODE_AGENT`       | `build`                 | OpenCode agent                                                            |
+| `OPENCODE_MODEL`       | `openai/gpt-5.6-sol`    | Main model in `provider/model` form                                       |
+| `OPENCODE_SMALL_MODEL` | `openai/gpt-5.6-luna`   | Utility model in `provider/model` form                                    |
+| `OPENCODE_EFFORT`      | `medium`                | Model variant/effort, such as `high`                                      |
+| `OPENCODE_USERNAME`    | `opencode`              | OpenCode Basic auth username                                              |
+| `OPENCODE_PASSWORD`    | required                | OpenCode Basic auth password                                              |
 
 ## Local Mock
 
-After configuring `OPENCODE_PASSWORD` and `OPENROUTER_API_KEY`, run `bun run dev` to exercise the full Chat SDK and OpenCode
+After configuring `OPENCODE_PASSWORD`, run `bun run dev` to exercise the full Chat SDK and OpenCode
 path without Slack credentials. Every normal line is treated as a mention. Useful commands:
 
 ```text

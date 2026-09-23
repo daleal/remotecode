@@ -4,16 +4,15 @@ import type { Message, Thread } from 'chat';
 import { env } from './config/env';
 import type { ThreadState } from './thread-session';
 
-const model = createOpenRouter({ apiKey: env.OPENROUTER_API_KEY }).evaluationModel(
-  '~typesafe/jev-latest',
-);
-
 const THRESHOLD = 0.7;
+const EVALUATION_MODEL = '~typesafe/jev-latest';
 
 export const shouldRespond = async (
   thread: Thread<ThreadState>,
   message: Message,
 ): Promise<boolean> => {
+  if (!env.OPENROUTER_API_KEY) return false;
+
   try {
     const history = await getRecentMessages(thread, message);
     const result = await evaluateResponse(history, message);
@@ -41,7 +40,7 @@ const getRecentMessages = async (thread: Thread<ThreadState>, message: Message) 
 
 const evaluateResponse = (history: Message[], message: Message) =>
   evaluate({
-    model,
+    model: createOpenRouter({ apiKey: env.OPENROUTER_API_KEY }).evaluationModel(EVALUATION_MODEL),
     abortSignal: AbortSignal.timeout(10_000),
     maxRetries: 0,
     state: {
