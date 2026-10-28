@@ -4,7 +4,7 @@ import type { OpenCodeConfig } from './opencode';
 import { generateAndApplySessionTitle } from './session-title';
 import { runSessionTurn } from './session-turn';
 import { shouldRespond } from './should-respond';
-import { buildThreadPrompt, messagesSince } from './thread-prompt';
+import { buildThreadPrompt, messagesSince, threadImageFiles } from './thread-prompt';
 import { getOrCreateThreadSession, type ThreadState } from './thread-session';
 import { createThreadWorkspace } from './workspace';
 
@@ -177,6 +177,7 @@ export const processMention = async ({
   const response = await runSessionTurn({
     adapterName: thread.adapter.name,
     client,
+    files: await threadImageFiles(contextMessages),
     metadata: { lastMessageID, source: thread.adapter.name, threadID: thread.id },
     prompt,
     sessionID: session.sessionID,

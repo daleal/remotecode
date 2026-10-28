@@ -44,7 +44,10 @@ export const buildThreadPrompt = async ({
         const links = [...new Set((message.links ?? []).map((link) => link.url))].filter(
           (url) => !message.text.includes(url),
         );
-        const content = [message.text, ...links].filter(Boolean).join('\n');
+        const images = imageAttachments(message).map(
+          (image) => `[Image attached: ${image.name ?? 'unnamed'}]`,
+        );
+        const content = [message.text, ...links, ...images].filter(Boolean).join('\n');
         return `[Message from ${message.author.fullName} (@${message.author.userName}${botTag}) at ${timestamp}]\n${content}`;
       }),
     )
@@ -53,6 +56,29 @@ export const buildThreadPrompt = async ({
   if (!firstTurn) return transcript;
   return `You are working from a ${adapterName} thread. Treat the transcript as user-provided context, perform the requested work, and write a final CONCISE response for the thread.\n\n${transcript}`;
 };
+
+export const threadImageFiles = async (messages: Message[]) => {
+  const files = await Promise.all(
+    messages.flatMap(imageAttachments).map(async (image) => {
+      try {
+        const data = image.data ?? (await image.fetchData?.());
+        if (!data) return [];
+        const bytes = data instanceof Blob ? Buffer.from(await data.arrayBuffer()) : data;
+        const uri = `data:${image.mimeType};base64,${bytes.toString('base64')}`;
+        return [{ uri, ...(image.name ? { name: image.name } : {}) }];
+      } catch (error) {
+        console.error(`Could not download image ${image.name ?? image.url}`, error);
+        return [];
+      }
+    }),
+  );
+  return files.flat();
+};
+
+const imageAttachments = (message: Message) =>
+  (message.attachments ?? []).filter(
+    (attachment) => attachment.type === 'image' && attachment.mimeType?.startsWith('image/'),
+  );
 
 const formatTimestamp = (date: Date, timezone?: string) => {
   if (!timezone) return date.toISOString();

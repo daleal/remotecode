@@ -1,7 +1,7 @@
 import { createSlackAdapter } from '@chat-adapter/slack';
 import type { Message, Thread } from 'chat';
 import { describe, expect, it, vi } from 'vitest';
-import { buildThreadPrompt, messagesSince } from '../thread-prompt';
+import { buildThreadPrompt, messagesSince, threadImageFiles } from '../thread-prompt';
 import type { ThreadState } from '../thread-session';
 
 const message = (id: string, text: string, isBot = false) =>
@@ -99,6 +99,19 @@ describe('buildThreadPrompt', () => {
     expect(userTimezone).toHaveBeenCalledTimes(2);
   });
 
+  it('references attached images in the transcript', async () => {
+    const withImage = message('one', 'What is wrong here?');
+    withImage.attachments = [{ type: 'image', mimeType: 'image/png', name: 'error.png' }];
+
+    const prompt = await buildThreadPrompt({
+      adapterName: 'slack',
+      firstTurn: false,
+      messages: [withImage],
+    });
+
+    expect(prompt).toContain('What is wrong here?\n[Image attached: error.png]');
+  });
+
   it('omits first-turn instructions on later turns', async () => {
     const prompt = await buildThreadPrompt({
       adapterName: 'slack',
@@ -107,5 +120,35 @@ describe('buildThreadPrompt', () => {
     });
 
     expect(prompt).toBe('[Message from Ada Lovelace (@ada) at 2026-08-17T12:00:00.000Z]\nContinue');
+  });
+});
+
+describe('threadImageFiles', () => {
+  it('downloads images as data URIs and skips other attachments and failures', async () => {
+    const withFiles = message('one', 'See attached');
+    withFiles.attachments = [
+      {
+        type: 'image',
+        mimeType: 'image/png',
+        name: 'error.png',
+        fetchData: async () => Buffer.from('png-bytes'),
+      },
+      { type: 'file', mimeType: 'application/pdf', fetchData: async () => Buffer.from('pdf') },
+      {
+        type: 'image',
+        mimeType: 'image/jpeg',
+        fetchData: async () => {
+          throw new Error('missing files:read');
+        },
+      },
+    ];
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(threadImageFiles([withFiles])).resolves.toEqual([
+      {
+        uri: `data:image/png;base64,${Buffer.from('png-bytes').toString('base64')}`,
+        name: 'error.png',
+      },
+    ]);
   });
 });

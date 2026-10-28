@@ -3,6 +3,7 @@ import type { OpenCodeClient, SessionMessageInfo } from '@opencode/client';
 type RunSessionTurnOptions = {
   adapterName: string;
   client: OpenCodeClient;
+  files?: { uri: string; name?: string }[];
   metadata: {
     lastMessageID: string;
     source: string;
@@ -15,6 +16,7 @@ type RunSessionTurnOptions = {
 export const runSessionTurn = async ({
   adapterName,
   client,
+  files,
   metadata,
   prompt,
   sessionID,
@@ -33,7 +35,12 @@ export const runSessionTurn = async ({
 
   let newMessages: SessionMessageInfo[];
   try {
-    await client.session.prompt({ metadata, sessionID, text: prompt });
+    await client.session.prompt({
+      metadata,
+      sessionID,
+      text: prompt,
+      ...(files?.length ? { files } : {}),
+    });
     await waitForSession(client, sessionID);
 
     newMessages = await newSessionMessages(client, sessionID, previousAssistantIDs);
