@@ -33,9 +33,19 @@ prepare_repository() {
   local target=$2
   local reference=refs/remotes/origin/main
   local fetch_output
+  local fetch_status
+  local attempt
 
-  if fetch_output=$(git -C "$repository" fetch --prune origin \
-    '+refs/heads/main:refs/remotes/origin/main' 2>&1); then
+  for attempt in 1 2 3; do
+    fetch_status=0
+    fetch_output=$(git -C "$repository" fetch --prune origin \
+      '+refs/heads/main:refs/remotes/origin/main' 2>&1) || fetch_status=$?
+    [ "$fetch_status" -ne 0 ] || break
+    printf '%s\n' "$fetch_output" | grep -Eq 'incorrect old value|cannot lock ref|Unable to create .*\.lock' || break
+    sleep "$attempt"
+  done
+
+  if [ "$fetch_status" -eq 0 ]; then
     [ -z "$fetch_output" ] || printf '%s\n' "$fetch_output" >&2
   else
     printf '%s\n' "$fetch_output" >&2
@@ -152,7 +162,10 @@ export const createThreadWorkspace = async ({
         await client.shell.remove({ id: started.data.id }).catch(() => {});
       }
     });
-  provisionQueue = operation.then(() => undefined);
+  provisionQueue = operation.then(
+    () => undefined,
+    () => undefined,
+  );
   return operation;
 };
 
