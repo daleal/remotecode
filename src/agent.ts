@@ -435,9 +435,20 @@ const decodedThreadParts = (thread: Thread<ThreadState>) => {
   return decoded?.channel && threadTs ? { channel: decoded.channel, threadTs } : undefined;
 };
 
+const MAX_TYPING_STATUS_LENGTH = 50;
+
+const clampTypingStatus = (status: string) => {
+  const singleLine = status.replace(/\s+/g, ' ').trim();
+  if (singleLine.length <= MAX_TYPING_STATUS_LENGTH) return singleLine;
+  if (singleLine.endsWith('...')) {
+    return `${singleLine.slice(0, MAX_TYPING_STATUS_LENGTH - 3).trimEnd()}...`;
+  }
+  return `${singleLine.slice(0, MAX_TYPING_STATUS_LENGTH - 1).trimEnd()}…`;
+};
+
 const setTypingStatus = async (thread: Thread<ThreadState>, status: string) => {
   try {
-    await thread.startTyping(status);
+    await thread.startTyping(clampTypingStatus(status));
   } catch (error) {
     console.error('Could not update typing status', error);
   }

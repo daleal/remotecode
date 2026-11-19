@@ -352,6 +352,118 @@ describe('runSessionTurn', () => {
     ]);
   });
 
+  it('keeps all emitted tool status messages within Slack 50-character limit', async () => {
+    const statuses: string[] = [];
+    let releaseWait = () => {};
+    const waitPromise = new Promise<void>((resolve) => {
+      releaseWait = resolve;
+    });
+    const events: unknown[] = [
+      {
+        data: {
+          assistantMessageID: 'assistant-1',
+          id: 'tool-1',
+          name: 'bash',
+          sessionID: 'session-1',
+        },
+        type: 'session.tool.input.started',
+      },
+      {
+        data: {
+          assistantMessageID: 'assistant-1',
+          executed: true,
+          id: 'tool-1',
+          input: {
+            description:
+              'A very long shell command description that exceeds fifty characters easily',
+          },
+          sessionID: 'session-1',
+        },
+        type: 'session.tool.called',
+      },
+      {
+        data: {
+          assistantMessageID: 'assistant-1',
+          id: 'tool-2',
+          name: 'grep',
+          sessionID: 'session-1',
+        },
+        type: 'session.tool.input.started',
+      },
+      {
+        data: {
+          assistantMessageID: 'assistant-1',
+          executed: true,
+          id: 'tool-2',
+          input: {
+            pattern: 'someVeryLongRegexPatternNameThatWillDefinitelyExceedFiftyCharacters',
+          },
+          sessionID: 'session-1',
+        },
+        type: 'session.tool.called',
+      },
+      {
+        data: {
+          assistantMessageID: 'assistant-1',
+          id: 'tool-3',
+          name: 'very_long_custom_mcp_server_tool_name_that_exceeds_slack_limit',
+          sessionID: 'session-1',
+        },
+        type: 'session.tool.input.started',
+      },
+      {
+        data: {
+          assistantMessageID: 'assistant-1',
+          executed: true,
+          id: 'tool-3',
+          input: {},
+          sessionID: 'session-1',
+        },
+        type: 'session.tool.called',
+      },
+    ];
+    let prompted = false;
+    const client = {
+      event: {
+        subscribe: vi.fn(async function* () {
+          for (const event of events) yield event;
+          releaseWait();
+        }),
+      },
+      message: {
+        list: vi.fn(async () => ({
+          cursor: {},
+          data: prompted
+            ? [{ content: [{ text: 'Done', type: 'text' }], id: 'assistant-1', type: 'assistant' }]
+            : [],
+        })),
+      },
+      permission: { list: vi.fn(async () => []), reply: vi.fn() },
+      session: {
+        list: vi.fn(async () => ({ cursor: {}, data: [] })),
+        prompt: vi.fn(async () => {
+          prompted = true;
+        }),
+        wait: vi.fn(() => waitPromise),
+      },
+    } as unknown as OpenCodeClient;
+
+    await runSessionTurn({
+      adapterName: 'slack',
+      client,
+      metadata,
+      onChunk: () => {},
+      onStatus: (status) => statuses.push(status),
+      prompt: 'Check',
+      sessionID: 'session-1',
+    });
+
+    expect(statuses.length).toBeGreaterThan(0);
+    for (const status of statuses) {
+      expect(status.length).toBeLessThanOrEqual(50);
+    }
+  });
+
   it('interrupts OpenCode and throws TurnAbortedError when aborted', async () => {
     const controller = new AbortController();
     const interrupt = vi.fn(async () => ({ interrupted: true }));

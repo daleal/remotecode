@@ -266,7 +266,7 @@ const TOOL_TITLES: Record<string, string> = {
   write: 'Writing file',
 };
 
-const formatToolTitle = (name: string) => TOOL_TITLES[name] ?? `Running ${name}`;
+const formatToolTitle = (name: string) => truncate(TOOL_TITLES[name] ?? `Running ${name}`, 47);
 
 const describeToolCall = (name: string, input: Record<string, unknown>) => {
   const str = (key: string) => (typeof input[key] === 'string' ? input[key] : undefined);
@@ -274,42 +274,42 @@ const describeToolCall = (name: string, input: Record<string, unknown>) => {
     const description = str('description');
     const command = str('command');
     return description
-      ? truncate(description, 60)
+      ? truncate(description, 47)
       : command
-        ? `Running ${truncate(command, 50)}`
+        ? `Running ${truncate(command, 39)}`
         : 'Running command';
   }
   if (name === 'read') {
     const path = str('path') ?? str('filePath');
-    return path ? `Reading ${truncate(shortPath(path), 50)}` : 'Reading file';
+    return path ? `Reading ${truncate(shortPath(path), 39)}` : 'Reading file';
   }
   if (name === 'edit') {
     const path = str('path') ?? str('filePath');
-    return path ? `Editing ${truncate(shortPath(path), 50)}` : 'Editing file';
+    return path ? `Editing ${truncate(shortPath(path), 39)}` : 'Editing file';
   }
   if (name === 'write') {
     const path = str('path') ?? str('filePath');
-    return path ? `Writing ${truncate(shortPath(path), 50)}` : 'Writing file';
+    return path ? `Writing ${truncate(shortPath(path), 39)}` : 'Writing file';
   }
   if (name === 'grep') {
     const pattern = str('pattern');
-    return pattern ? `Searching "${truncate(pattern, 45)}"` : 'Searching code';
+    return pattern ? `Searching "${truncate(pattern, 35)}"` : 'Searching code';
   }
   if (name === 'glob') {
     const pattern = str('pattern');
-    return pattern ? `Finding ${truncate(pattern, 50)}` : 'Finding files';
+    return pattern ? `Finding ${truncate(pattern, 39)}` : 'Finding files';
   }
   if (name === 'subagent') {
     const description = str('description');
-    return description ? truncate(description, 60) : 'Running subagent';
+    return description ? truncate(description, 47) : 'Running subagent';
   }
   if (name === 'websearch') {
     const query = str('query');
-    return query ? `Searching "${truncate(query, 45)}"` : 'Searching the web';
+    return query ? `Searching "${truncate(query, 35)}"` : 'Searching the web';
   }
   if (name === 'webfetch') {
     const url = str('url');
-    return url ? `Fetching ${truncate(url, 50)}` : 'Fetching page';
+    return url ? `Fetching ${truncate(url, 38)}` : 'Fetching page';
   }
   return formatToolTitle(name);
 };
