@@ -2,47 +2,78 @@ import type { OpenCodeClient } from '@opencode/client';
 import type { OpenCodeConfig } from './opencode';
 
 export type ThreadState = {
+  availableRepos?: string[];
+  directory?: string;
   lastMessageID?: string;
+  provisionedRepos?: string[];
+  repositoryRoot?: string;
   sessionID?: string;
 };
 
 type GetOrCreateThreadSessionOptions = {
   adapterName: string;
+  availableRepos?: string[];
   client: OpenCodeClient;
   config: Pick<OpenCodeConfig, 'agent' | 'model'>;
   directory: string;
+  provisionedRepos?: string[];
   state?: ThreadState | null;
   threadID: string;
 };
 
 export const getOrCreateThreadSession = async ({
   adapterName,
+  availableRepos,
   client,
   config,
   directory,
+  provisionedRepos,
   state,
   threadID,
 }: GetOrCreateThreadSessionOptions) => {
   const recovered = state?.sessionID
-    ? { id: state.sessionID, lastMessageID: state.lastMessageID }
+    ? {
+        availableRepos: state.availableRepos,
+        id: state.sessionID,
+        lastMessageID: state.lastMessageID,
+        provisionedRepos: state.provisionedRepos,
+      }
     : await recoverSession(client, adapterName, threadID, directory);
 
   if (recovered) {
     return {
+      availableRepos: recovered.availableRepos,
       created: false,
       lastMessageID: recovered.lastMessageID,
+      provisionedRepos: recovered.provisionedRepos,
       sessionID: recovered.id,
     };
   }
 
+  const metadata =
+    availableRepos || provisionedRepos
+      ? {
+          ...(availableRepos ? { availableRepos } : {}),
+          ...(provisionedRepos ? { provisionedRepos } : {}),
+          threadID,
+        }
+      : undefined;
+
   const session = await client.session.create({
     agent: config.agent,
     location: { directory },
+    ...(metadata ? { metadata } : {}),
     model: config.model,
     permissions: [{ action: 'question', resource: '*', effect: 'deny' }],
     title: threadID,
   });
-  return { created: true, lastMessageID: undefined, sessionID: session.id };
+  return {
+    availableRepos,
+    created: true,
+    lastMessageID: undefined,
+    provisionedRepos,
+    sessionID: session.id,
+  };
 };
 
 const recoverSession = async (
@@ -69,7 +100,12 @@ const recoverSession = async (
   const recovered = states.find((item) => item.state?.threadID === threadID);
   if (!recovered) return undefined;
 
-  return { id: recovered.id, lastMessageID: recovered.state?.lastMessageID };
+  return {
+    availableRepos: recovered.state?.availableRepos,
+    id: recovered.id,
+    lastMessageID: recovered.state?.lastMessageID,
+    provisionedRepos: recovered.state?.provisionedRepos,
+  };
 };
 
 const importedThreadState = async (client: OpenCodeClient, sessionID: string) => {
@@ -87,8 +123,10 @@ const importedThreadState = async (client: OpenCodeClient, sessionID: string) =>
       const lastMessageID = item.metadata?.lastMessageID;
       if (typeof threadID === 'string') {
         return {
-          threadID,
+          availableRepos: stringArray(item.metadata?.availableRepos),
           lastMessageID: typeof lastMessageID === 'string' ? lastMessageID : undefined,
+          provisionedRepos: stringArray(item.metadata?.provisionedRepos),
+          threadID,
         };
       }
     }
@@ -97,3 +135,6 @@ const importedThreadState = async (client: OpenCodeClient, sessionID: string) =>
 
   return undefined;
 };
+
+const stringArray = (value: unknown): string[] | undefined =>
+  Array.isArray(value) && value.every((item) => typeof item === 'string') ? value : undefined;

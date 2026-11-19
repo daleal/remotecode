@@ -13,7 +13,9 @@ export type RunSessionTurnOptions = {
   client: OpenCodeClient;
   files?: { uri: string; name?: string }[];
   metadata: {
+    availableRepos?: string[];
     lastMessageID: string;
+    provisionedRepos?: string[];
     source: string;
     threadID: string;
   };

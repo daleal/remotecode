@@ -1,7 +1,12 @@
 import { createSlackAdapter } from '@chat-adapter/slack';
 import type { Message, Thread } from 'chat';
 import { describe, expect, it, vi } from 'vitest';
-import { buildThreadPrompt, messagesSince, threadImageFiles } from '../thread-prompt';
+import {
+  buildThreadPrompt,
+  collectThreadMessages,
+  messagesSince,
+  threadImageFiles,
+} from '../thread-prompt';
 import type { ThreadState } from '../thread-session';
 
 const message = (id: string, text: string, isBot = false) =>
@@ -40,6 +45,22 @@ describe('messagesSince', () => {
     const messages = [message('one', 'first'), message('two', 'second')];
 
     await expect(messagesSince(threadWithMessages(messages), 'missing')).resolves.toEqual(messages);
+  });
+});
+
+describe('collectThreadMessages', () => {
+  it('returns new messages since checkpoint alongside bounded prior context', async () => {
+    const messages = [
+      message('one', 'first'),
+      message('two', 'second'),
+      message('three', 'third'),
+      message('four', 'fourth'),
+    ];
+
+    await expect(collectThreadMessages(threadWithMessages(messages), 'three', 2)).resolves.toEqual({
+      messages: [messages[3]],
+      priorMessages: [messages[1], messages[2]],
+    });
   });
 });
 
@@ -134,6 +155,48 @@ describe('buildThreadPrompt', () => {
 
     expect(prompt).toBe(
       '<slack>\n[Message from Ada Lovelace (@ada) at 2026-08-17T12:00:00.000Z]\nContinue',
+    );
+  });
+
+  it('includes provisioned and available repository summary on first turn and updates on later turns', async () => {
+    const firstTurn = await buildThreadPrompt({
+      adapterName: 'slack',
+      firstTurn: true,
+      messages: [message('one', 'Check api')],
+      workspace: {
+        availableRepos: ['api', 'dashboard', 'sdk'],
+        newlyProvisionedRepos: ['api'],
+        provisionedRepos: ['api'],
+      },
+    });
+    expect(firstTurn).toContain(
+      'Workspace repositories provisioned: api. Other available repositories not checked out: dashboard, sdk.',
+    );
+
+    const laterNoNew = await buildThreadPrompt({
+      adapterName: 'slack',
+      firstTurn: false,
+      messages: [message('two', 'More details')],
+      workspace: {
+        availableRepos: ['api', 'dashboard', 'sdk'],
+        newlyProvisionedRepos: [],
+        provisionedRepos: ['api'],
+      },
+    });
+    expect(laterNoNew).not.toContain('provisioned');
+
+    const laterWithNew = await buildThreadPrompt({
+      adapterName: 'slack',
+      firstTurn: false,
+      messages: [message('three', 'Check dashboard')],
+      workspace: {
+        availableRepos: ['api', 'dashboard', 'sdk'],
+        newlyProvisionedRepos: ['dashboard'],
+        provisionedRepos: ['api', 'dashboard'],
+      },
+    });
+    expect(laterWithNew).toContain(
+      'Newly provisioned workspace repositories: dashboard. Workspace repositories currently checked out: api, dashboard.',
     );
   });
 });

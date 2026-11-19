@@ -62,11 +62,14 @@ gets especially useful for debugging and quick fixes.
 
 ## Git workspaces
 
-For each new thread, RemoteCode uses OpenCode's remote shell API to discover Git repositories
-directly under `REPOS_ROOT`, fetch each repository's `origin/main`, and create one detached
-worktree per repository under `WORKSPACE_ROOT/sessions`.
-Existing threads keep their original worktrees and changes. Both paths live on the OpenCode
-server's machine; RemoteCode needs no filesystem access to them.
+For each new thread, RemoteCode uses OpenCode's remote shell API to create an isolated workspace
+directory under `WORKSPACE_ROOT/sessions` and discover Git repositories directly under `REPOS_ROOT`.
+On every message (when unprovisioned repositories remain), an ephemeral read-only OpenCode session
+using `OPENCODE_SMALL_MODEL` decides which additional repositories are needed for the request, and
+RemoteCode fetches `origin/main` and creates detached worktrees only for those repositories.
+Available and already-provisioned repositories are tracked in thread state and OpenCode session
+metadata. Existing threads keep their previously provisioned worktrees and changes. Both paths live
+on the OpenCode server's machine; RemoteCode needs no filesystem access to them.
 
 Repositories must be immediate children of `REPOS_ROOT`, have an `origin` remote, and expose
 `origin/main`. The checked-out branch and files in each source working copy are never changed.

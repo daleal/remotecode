@@ -14,6 +14,15 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
+const staticWorkspace = {
+  initWorkspace: async ({ repositoryRoot }: { repositoryRoot: string }) => ({
+    availableRepos: [] as string[],
+    directory: repositoryRoot,
+    provisionedRepos: [] as string[],
+    repositoryRoot,
+  }),
+};
+
 describe('Slack agent', () => {
   it.each([true, false])(
     'routes follow-ups with shouldRespond=%s and imports only new context',
@@ -80,7 +89,7 @@ describe('Slack agent', () => {
         state: createMemoryState(),
         userTimezone: async () => 'Europe/Madrid',
         userName: 'remotecode',
-        workspaceForThread: async ({ repositoryRoot }) => repositoryRoot,
+        ...staticWorkspace,
       });
       bots.push(bot);
       await bot.initialize();
@@ -170,7 +179,7 @@ describe('Slack agent', () => {
       openCode: client,
       state: createMemoryState(),
       userName: 'remotecode',
-      workspaceForThread: async ({ repositoryRoot }) => repositoryRoot,
+      ...staticWorkspace,
     });
     bots.push(bot);
     await bot.initialize();
@@ -248,7 +257,7 @@ describe('Slack agent', () => {
       openCode: client,
       state: createMemoryState(),
       userName: 'remotecode',
-      workspaceForThread: async ({ repositoryRoot }) => repositoryRoot,
+      ...staticWorkspace,
     });
     bots.push(bot);
     await bot.initialize();
@@ -290,7 +299,7 @@ describe('Slack agent', () => {
       openCode: {} as OpenCodeClient,
       state: createMemoryState(),
       userName: 'remotecode',
-      workspaceForThread: async () => {
+      initWorkspace: async () => {
         throw new Error('workspace failure');
       },
     });
@@ -321,7 +330,7 @@ describe('Slack agent', () => {
       openCode: client,
       state: createMemoryState(),
       userName: 'remotecode',
-      workspaceForThread: async ({ repositoryRoot }) => repositoryRoot,
+      ...staticWorkspace,
     });
     bots.push(bot);
     await bot.initialize();
@@ -393,7 +402,7 @@ describe('Slack agent', () => {
       state: createMemoryState(),
       uiAdapters: ['mock'],
       userName: 'remotecode',
-      workspaceForThread: async ({ repositoryRoot }) => repositoryRoot,
+      ...staticWorkspace,
     });
     bots.push(bot);
     await bot.initialize();
@@ -459,7 +468,7 @@ describe('Slack agent', () => {
       openCode: client,
       state: createMemoryState(),
       userName: 'remotecode',
-      workspaceForThread: async ({ repositoryRoot }) => repositoryRoot,
+      ...staticWorkspace,
     });
     bots.push(bot);
     await bot.initialize();
@@ -592,18 +601,14 @@ describe('Slack agent', () => {
       state: createMemoryState(),
       uiAdapters: ['mock'],
       userName: 'remotecode',
-      workspaceForThread: async ({ repositoryRoot }) => repositoryRoot,
+      ...staticWorkspace,
     });
     bots.push(bot);
     await bot.initialize();
 
     await adapter.receive('stream', 'run tests');
 
-    expect(lifecycle.slice(0, 3)).toEqual([
-      'typing:Setting up workspace...',
-      'ephemeral',
-      'typing:Thinking...',
-    ]);
+    expect(lifecycle.slice(0, 2)).toEqual(['ephemeral', 'typing:Thinking...']);
     expect(adapter.typingStatuses).toContain('Run test suite...');
     expect(
       adapter.streamChunks.filter(
@@ -685,7 +690,7 @@ describe('Slack agent', () => {
       openCode: client,
       state: createMemoryState(),
       userName: 'remotecode',
-      workspaceForThread: async ({ repositoryRoot }) => repositoryRoot,
+      ...staticWorkspace,
     });
     bots.push(bot);
     await bot.initialize();
@@ -750,7 +755,7 @@ describe('Slack agent', () => {
       openCode: client,
       state: createMemoryState(),
       userName: 'remotecode',
-      workspaceForThread: async ({ repositoryRoot }) => repositoryRoot,
+      ...staticWorkspace,
     });
     bots.push(bot);
     await bot.initialize();
@@ -765,5 +770,269 @@ describe('Slack agent', () => {
     expect(adapter.reactions).toEqual([{ emoji: 'octagonal_sign', messageId: 'mock-3' }]);
     expect(adapter.endTypingCount).toBeGreaterThanOrEqual(1);
     expect(adapter.outputs).toEqual([]);
+  });
+
+  it('lazily selects and provisions needed repositories per message and tracks them in session state', async () => {
+    const prompts: Array<{ metadata?: Record<string, unknown>; text: string }> = [];
+    const messages: unknown[] = [];
+    const initWorkspace = vi.fn(async () => ({
+      availableRepos: ['api', 'dashboard'],
+      directory: '/tmp/workspaces/sessions/lazy',
+      provisionedRepos: [] as string[],
+      repositoryRoot: '/tmp/repos',
+    }));
+    const provisionRepos = vi.fn(async ({ repos }: { repos: readonly string[] }) => [...repos]);
+    const selectRepos = vi.fn(
+      async ({
+        messages: turnMessages,
+        provisionedRepos,
+      }: {
+        messages: Array<{ text: string }>;
+        provisionedRepos: readonly string[];
+      }) => {
+        const latest = turnMessages.at(-1)?.text ?? '';
+        if (latest.includes('api')) return ['api'];
+        if (latest.includes('dashboard') && !provisionedRepos.includes('dashboard')) {
+          return ['dashboard'];
+        }
+        return [];
+      },
+    );
+    const client = {
+      generate: { text: vi.fn(async () => ({ text: 'Lazy workspace' })) },
+      message: {
+        list: vi.fn(async () => ({ cursor: {}, data: [...messages].reverse() })),
+      },
+      permission: { list: vi.fn(async () => []), reply: vi.fn(async () => {}) },
+      session: {
+        create: vi.fn(async () => ({ id: 'session-lazy' })),
+        list: vi.fn(async () => ({ cursor: {}, data: [] })),
+        prompt: vi.fn(async (input: { metadata?: Record<string, unknown>; text: string }) => {
+          prompts.push(input);
+          messages.push(
+            { id: `user-${prompts.length}`, metadata: input.metadata, type: 'user' },
+            {
+              content: [{ text: `reply ${prompts.length}`, type: 'text' }],
+              id: `assistant-${prompts.length}`,
+              type: 'assistant',
+            },
+          );
+        }),
+        update: vi.fn(async () => {}),
+        wait: vi.fn(async () => {}),
+      },
+    } as unknown as OpenCodeClient;
+    const state = createMemoryState();
+    const adapter = new MockAdapter('remotecode');
+    const lifecycle: string[] = [];
+    const origPostEphemeral = adapter.postEphemeral.bind(adapter);
+    vi.spyOn(adapter, 'postEphemeral').mockImplementation(async (...args) => {
+      lifecycle.push('ephemeral');
+      return origPostEphemeral(...args);
+    });
+    const origStartTyping = adapter.startTyping.bind(adapter);
+    vi.spyOn(adapter, 'startTyping').mockImplementation(async (threadId, status) => {
+      lifecycle.push(`typing:${status ?? ''}`);
+      return origStartTyping(threadId, status);
+    });
+    const bot = createAgent({
+      adapters: { mock: adapter },
+      allowedUsers: ['local-user'],
+      config: {
+        agent: 'build',
+        model: { id: 'model', providerID: 'provider', variant: 'high' },
+        reposRoot: '/tmp/repos',
+        smallModel: { id: 'small-model', providerID: 'provider' },
+        workspaceRoot: '/tmp/workspaces',
+      },
+      initWorkspace,
+      openCode: client,
+      provisionRepos,
+      selectRepos,
+      state,
+      userName: 'remotecode',
+    });
+    bots.push(bot);
+    await bot.initialize();
+
+    await adapter.receive('lazy', 'check api webhook');
+    await adapter.receive('lazy', 'now check dashboard too');
+    await adapter.receive('lazy', 'summarize both');
+
+    expect(lifecycle).toEqual([
+      'ephemeral',
+      'typing:Thinking...',
+      'typing:Preparing repositories...',
+      'typing:Thinking...',
+      'typing:Thinking...',
+      'typing:Preparing repositories...',
+      'typing:Thinking...',
+      'typing:Thinking...',
+    ]);
+
+    expect(initWorkspace).toHaveBeenCalledTimes(1);
+    expect(selectRepos).toHaveBeenCalledTimes(2);
+    expect(selectRepos.mock.calls[0]?.[0]).toMatchObject({
+      availableRepos: ['api', 'dashboard'],
+      provisionedRepos: [],
+      repositoryRoot: '/tmp/repos',
+    });
+    expect(selectRepos.mock.calls[1]?.[0]).toMatchObject({
+      availableRepos: ['api', 'dashboard'],
+      provisionedRepos: ['api'],
+      repositoryRoot: '/tmp/repos',
+    });
+    expect(provisionRepos).toHaveBeenCalledTimes(2);
+    expect(provisionRepos.mock.calls[0]?.[0]?.repos).toEqual(['api']);
+    expect(provisionRepos.mock.calls[1]?.[0]?.repos).toEqual(['dashboard']);
+
+    expect(prompts[0]?.metadata).toMatchObject({
+      availableRepos: ['api', 'dashboard'],
+      provisionedRepos: ['api'],
+    });
+    expect(prompts[0]?.text).toContain(
+      'Workspace repositories provisioned: api. Other available repositories not checked out: dashboard.',
+    );
+    expect(prompts[1]?.metadata).toMatchObject({
+      availableRepos: ['api', 'dashboard'],
+      provisionedRepos: ['api', 'dashboard'],
+    });
+    expect(prompts[1]?.text).toContain('Newly provisioned workspace repositories: dashboard.');
+    expect(prompts[2]?.metadata).toMatchObject({
+      availableRepos: ['api', 'dashboard'],
+      provisionedRepos: ['api', 'dashboard'],
+    });
+    expect(prompts[2]?.text).not.toContain('Newly provisioned workspace repositories:');
+
+    const savedState = await state.get(
+      `thread-state:${adapter.encodeThreadId({ channel: 'local', thread: 'lazy' })}`,
+    );
+    expect(savedState).toMatchObject({
+      availableRepos: ['api', 'dashboard'],
+      directory: '/tmp/workspaces/sessions/lazy',
+      provisionedRepos: ['api', 'dashboard'],
+      repositoryRoot: '/tmp/repos',
+      sessionID: 'session-lazy',
+    });
+  });
+
+  it('selects and provisions additional repositories during a mid-turn steer without losing them', async () => {
+    const promptCalls: Array<{
+      delivery?: string;
+      metadata?: Record<string, unknown>;
+      text: string;
+    }> = [];
+    let releaseFirstWait = () => {};
+    let waitCount = 0;
+    let firstPromptSent = () => {};
+    const firstPromptReady = new Promise<void>((resolve) => {
+      firstPromptSent = resolve;
+    });
+    const messages: unknown[] = [];
+
+    const provisionRepos = vi.fn(async ({ repos }: { repos: readonly string[] }) => [...repos]);
+    const selectRepos = vi.fn(
+      async ({ messages: turnMessages }: { messages: Array<{ text: string }> }) => {
+        const latest = turnMessages.at(-1)?.text ?? '';
+        if (latest.includes('api')) return ['api'];
+        if (latest.includes('dashboard')) return ['dashboard'];
+        return [];
+      },
+    );
+
+    const client = {
+      generate: { text: vi.fn(async () => ({ text: 'Steer repos' })) },
+      message: {
+        list: vi.fn(async () => ({ cursor: {}, data: [...messages].reverse() })),
+      },
+      permission: { list: vi.fn(async () => []), reply: vi.fn(async () => {}) },
+      session: {
+        create: vi.fn(async () => ({ id: 'session-steer-repos' })),
+        list: vi.fn(async () => ({ cursor: {}, data: [] })),
+        prompt: vi.fn(
+          async (input: {
+            delivery?: string;
+            metadata?: Record<string, unknown>;
+            text: string;
+          }) => {
+            promptCalls.push(input);
+            messages.push({
+              id: `user-${promptCalls.length}`,
+              metadata: input.metadata,
+              type: 'user',
+            });
+            if (promptCalls.length === 1) {
+              firstPromptSent();
+            } else {
+              messages.push({
+                content: [{ text: 'Checked api and dashboard!', type: 'text' }],
+                id: 'assistant-steered',
+                type: 'assistant',
+              });
+              releaseFirstWait();
+            }
+          },
+        ),
+        update: vi.fn(async () => {}),
+        wait: vi.fn(async () => {
+          waitCount += 1;
+          if (waitCount === 1) {
+            await new Promise<void>((resolve) => {
+              releaseFirstWait = resolve;
+            });
+          }
+        }),
+      },
+    } as unknown as OpenCodeClient;
+    const state = createMemoryState();
+    const adapter = new MockAdapter('remotecode');
+    const bot = createAgent({
+      adapters: { mock: adapter },
+      allowedUsers: ['local-user'],
+      config: {
+        agent: 'build',
+        model: { id: 'model', providerID: 'provider', variant: 'high' },
+        reposRoot: '/tmp/repos',
+        smallModel: { id: 'small-model', providerID: 'provider' },
+        workspaceRoot: '/tmp/workspaces',
+      },
+      initWorkspace: async () => ({
+        availableRepos: ['api', 'dashboard'],
+        directory: '/tmp/workspaces/sessions/steer',
+        provisionedRepos: [],
+        repositoryRoot: '/tmp/repos',
+      }),
+      openCode: client,
+      provisionRepos,
+      selectRepos,
+      state,
+      userName: 'remotecode',
+    });
+    bots.push(bot);
+    await bot.initialize();
+
+    const firstTurn = adapter.receive('steer-repos', 'check api');
+    await firstPromptReady;
+    await adapter.receive('steer-repos', 'also check dashboard');
+    await firstTurn;
+
+    expect(provisionRepos.mock.calls.map(([input]) => input.repos)).toEqual([
+      ['api'],
+      ['dashboard'],
+    ]);
+    expect(promptCalls[1]?.delivery).toBe('steer');
+    expect(promptCalls[1]?.text).toContain('Newly provisioned workspace repositories: dashboard.');
+    expect(promptCalls[1]?.metadata).toMatchObject({
+      availableRepos: ['api', 'dashboard'],
+      provisionedRepos: ['api', 'dashboard'],
+    });
+
+    const savedState = await state.get(
+      `thread-state:${adapter.encodeThreadId({ channel: 'local', thread: 'steer-repos' })}`,
+    );
+    expect(savedState).toMatchObject({
+      availableRepos: ['api', 'dashboard'],
+      provisionedRepos: ['api', 'dashboard'],
+    });
   });
 });

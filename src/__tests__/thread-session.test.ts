@@ -19,19 +19,26 @@ describe('getOrCreateThreadSession', () => {
         client,
         config,
         directory: '/workspace',
-        state: { lastMessageID: 'message-1', sessionID: 'session-1' },
+        state: {
+          availableRepos: ['api', 'web'],
+          lastMessageID: 'message-1',
+          provisionedRepos: ['api'],
+          sessionID: 'session-1',
+        },
         threadID: 'thread-1',
       }),
     ).resolves.toEqual({
+      availableRepos: ['api', 'web'],
       created: false,
       lastMessageID: 'message-1',
+      provisionedRepos: ['api'],
       sessionID: 'session-1',
     });
     expect(client.session.list).not.toHaveBeenCalled();
     expect(client.session.create).not.toHaveBeenCalled();
   });
 
-  it('recovers a matching session from prompt metadata', async () => {
+  it('recovers a matching session and repository metadata from prompt metadata', async () => {
     const listMessages = vi.fn(async (input: { cursor?: string; order?: string }) => {
       if (!input.cursor) return { cursor: { next: 'next' }, data: [] };
       return {
@@ -39,7 +46,12 @@ describe('getOrCreateThreadSession', () => {
         data: [
           {
             id: 'user-1',
-            metadata: { lastMessageID: 'message-2', threadID: 'thread-1' },
+            metadata: {
+              availableRepos: ['api', 'web'],
+              lastMessageID: 'message-2',
+              provisionedRepos: ['api'],
+              threadID: 'thread-1',
+            },
             type: 'user',
           },
         ],
@@ -71,8 +83,10 @@ describe('getOrCreateThreadSession', () => {
         threadID: 'thread-1',
       }),
     ).resolves.toEqual({
+      availableRepos: ['api', 'web'],
       created: false,
       lastMessageID: 'message-2',
+      provisionedRepos: ['api'],
       sessionID: 'session-1',
     });
     expect(listMessages).toHaveBeenNthCalledWith(1, {
@@ -88,7 +102,7 @@ describe('getOrCreateThreadSession', () => {
     expect(client.session.create).not.toHaveBeenCalled();
   });
 
-  it('creates a session when none can be recovered', async () => {
+  it('creates a session with repository metadata when none can be recovered', async () => {
     const client = {
       session: {
         create: vi.fn(async () => ({ id: 'session-new' })),
@@ -99,19 +113,28 @@ describe('getOrCreateThreadSession', () => {
     await expect(
       getOrCreateThreadSession({
         adapterName: 'slack',
+        availableRepos: ['api', 'web'],
         client,
         config,
         directory: '/workspace',
+        provisionedRepos: [],
         threadID: 'thread-1',
       }),
     ).resolves.toEqual({
+      availableRepos: ['api', 'web'],
       created: true,
       lastMessageID: undefined,
+      provisionedRepos: [],
       sessionID: 'session-new',
     });
     expect(client.session.create).toHaveBeenCalledWith({
       agent: 'build',
       location: { directory: '/workspace' },
+      metadata: {
+        availableRepos: ['api', 'web'],
+        provisionedRepos: [],
+        threadID: 'thread-1',
+      },
       model: config.model,
       permissions: [{ action: 'question', resource: '*', effect: 'deny' }],
       title: 'thread-1',
