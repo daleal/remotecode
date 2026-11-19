@@ -6,7 +6,7 @@ import { runSessionTurn } from './session-turn';
 import { shouldRespond } from './should-respond';
 import { buildThreadPrompt, messagesSince, threadImageFiles } from './thread-prompt';
 import { getOrCreateThreadSession, type ThreadState } from './thread-session';
-import { parseResponseParts } from './ui';
+import { parseResponseParts, supportsUI } from './ui';
 import { createThreadWorkspace } from './workspace';
 
 type CreateAgentOptions = {
@@ -15,6 +15,7 @@ type CreateAgentOptions = {
   config: OpenCodeConfig;
   openCode: OpenCodeClient;
   state: StateAdapter;
+  uiAdapters?: readonly string[];
   userTimezone?: (userId: string) => Promise<string | undefined>;
   userName: string;
   workspaceForThread?: typeof createThreadWorkspace;
@@ -26,6 +27,7 @@ type ProcessMentionOptions = {
   directory: string;
   thread: Thread<ThreadState>;
   triggeringMessage: Message;
+  uiAdapters?: readonly string[];
   userTimezone?: (userId: string) => Promise<string | undefined>;
 };
 
@@ -84,9 +86,10 @@ export const createAgent = (options: CreateAgentOptions) => {
         directory,
         thread,
         triggeringMessage: message,
+        uiAdapters: options.uiAdapters,
         userTimezone: options.userTimezone,
       });
-      await postResponse(thread, response);
+      await postResponse(thread, response, options.uiAdapters);
     } catch (error) {
       console.error(error);
       outcome = 'x';
@@ -106,7 +109,16 @@ export const createAgent = (options: CreateAgentOptions) => {
   return bot;
 };
 
-const postResponse = async (thread: Thread<ThreadState>, response: string) => {
+const postResponse = async (
+  thread: Thread<ThreadState>,
+  response: string,
+  uiAdapters?: readonly string[],
+) => {
+  if (!supportsUI(thread.adapter.name, uiAdapters)) {
+    await thread.post({ markdown: response });
+    return;
+  }
+
   for (const part of parseResponseParts(response)) {
     if (part.type === 'card') {
       await thread.post(part.card);
@@ -150,6 +162,7 @@ export const processMention = async ({
   directory,
   thread,
   triggeringMessage,
+  uiAdapters,
   userTimezone,
 }: ProcessMentionOptions) => {
   const session = await getOrCreateThreadSession({
@@ -183,6 +196,7 @@ export const processMention = async ({
     adapterName: thread.adapter.name,
     firstTurn: session.created,
     messages: contextMessages,
+    uiAdapters,
     userTimezone,
   });
   const response = await runSessionTurn({

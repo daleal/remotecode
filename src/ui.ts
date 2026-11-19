@@ -31,17 +31,30 @@ export const uiCatalog = defineCatalog(schema, {
   components: uiComponents,
 });
 
-export const uiInstructions = (adapterName: string) =>
-  uiCatalog.prompt({
+export const UI_SUPPORTED_ADAPTERS = ['slack'] as const;
+
+export const adapterPrefix = (adapterName: string) => `<${adapterName}>`;
+
+export const supportsUI = (
+  adapterName: string,
+  supportedAdapters: readonly string[] = UI_SUPPORTED_ADAPTERS,
+) => supportedAdapters.includes(adapterName);
+
+export const uiInstructions = (supportedAdapters: readonly string[] = UI_SUPPORTED_ADAPTERS) => {
+  if (supportedAdapters.length === 0) return '';
+  const prefixes = supportedAdapters.map(adapterPrefix).join(', ');
+  return uiCatalog.prompt({
     mode: 'inline',
-    system: `You can optionally render rich ${adapterName} cards using json-render specs when structured UI helps.`,
+    system: `You can optionally render rich UI cards using json-render specs when structured UI helps, ONLY when the latest user message starts with one of these prefixes: ${prefixes}. If the latest user message does not start with one of those prefixes, the client cannot render json-render specs—never emit \`\`\`spec blocks or json-render JSONL patches, and respond in plain markdown only.`,
     customRules: [
-      'Use plain markdown by default. Only emit a ```spec block when structured UI (tables, charts, KPI fields, cards, or link buttons) improves clarity over plain text.',
+      `Only emit a \`\`\`spec block or json-render JSONL when the latest user message starts with one of these prefixes: ${prefixes}. If the latest user message has no matching prefix (for example, raw messages sent directly in OpenCode or from an unsupported client), never emit \`\`\`spec blocks or json-render patches—respond in plain markdown only.`,
+      'Use plain markdown by default. Even for supported prefixes, only emit a ```spec block when structured UI (tables, charts, KPI fields, cards, or link buttons) improves clarity over plain text.',
       'Never emit Button elements; interactive actions are not supported. Only use LinkButton inside Actions for external URLs.',
       'Respect Slack limits: at most 1 Table and 2 Chart elements per card, chart titles under 50 characters, and chart labels under 20 characters.',
       'Avoid duplicating the full card content in prose outside the ```spec block.',
     ],
   });
+};
 
 const isFenceToggle = (line: string, activeFence: string) => {
   const trimmed = line.trim();

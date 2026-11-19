@@ -13,6 +13,7 @@ const bot = createAgent({
   config: getOpenCodeConfig(),
   openCode,
   state: createMemoryState(),
+  uiAdapters: ['mock'],
   userName: env.SLACK_BOT_NAME,
 });
 

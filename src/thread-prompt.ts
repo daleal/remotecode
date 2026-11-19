@@ -1,11 +1,12 @@
 import type { Message, Thread } from 'chat';
 import type { ThreadState } from './thread-session';
-import { uiInstructions } from './ui';
+import { adapterPrefix, supportsUI, uiInstructions } from './ui';
 
 type BuildThreadPromptOptions = {
   adapterName: string;
   firstTurn: boolean;
   messages: Message[];
+  uiAdapters?: readonly string[];
   userTimezone?: (userId: string) => Promise<string | undefined>;
 };
 
@@ -34,6 +35,7 @@ export const buildThreadPrompt = async ({
   adapterName,
   firstTurn,
   messages,
+  uiAdapters,
   userTimezone,
 }: BuildThreadPromptOptions) => {
   const transcript = (
@@ -54,12 +56,18 @@ export const buildThreadPrompt = async ({
     )
   ).join('\n\n');
 
-  if (!firstTurn) return transcript;
-  return [
-    `You are working from a ${adapterName} thread. Treat the transcript as user-provided context, perform the requested work, and write a final CONCISE response for the thread.`,
-    uiInstructions(adapterName),
-    transcript,
-  ].join('\n\n');
+  const prefix = adapterPrefix(adapterName);
+  if (!firstTurn) return `${prefix}\n${transcript}`;
+
+  const sections = [
+    `${prefix}\nYou are working from a ${adapterName} thread. Treat the transcript as user-provided context, perform the requested work, and write a final CONCISE response for the thread.`,
+  ];
+  if (supportsUI(adapterName, uiAdapters)) {
+    const instructions = uiInstructions(uiAdapters);
+    if (instructions) sections.push(instructions);
+  }
+  sections.push(transcript);
+  return sections.join('\n\n');
 };
 
 export const threadImageFiles = async (messages: Message[]) => {

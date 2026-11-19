@@ -77,7 +77,7 @@ describe('buildThreadPrompt', () => {
     expect((await buildThreadPrompt(options)).split(url)).toHaveLength(2);
   });
 
-  it('formats attributed messages and first-turn instructions', async () => {
+  it('formats attributed messages and first-turn instructions with adapter prefix', async () => {
     const userTimezone = vi.fn(async (userId: string) =>
       userId === 'user-1' ? 'Europe/London' : undefined,
     );
@@ -89,7 +89,8 @@ describe('buildThreadPrompt', () => {
       userTimezone,
     });
 
-    expect(prompt).toContain('You are working from a slack thread.');
+    expect(prompt.startsWith('<slack>\nYou are working from a slack thread.')).toBe(true);
+    expect(prompt).toContain('starts with one of these prefixes: <slack>.');
     expect(prompt).toContain('```spec');
     expect(prompt).toContain(
       '[Message from Ada Lovelace (@ada) at 2026-08-17T12:00:00.000Z (timezone: Europe/London)]\nPlease investigate',
@@ -98,6 +99,17 @@ describe('buildThreadPrompt', () => {
       '[Message from Build Bot (@build, bot) at 2026-08-17T12:00:00.000Z]\nBuild failed',
     );
     expect(userTimezone).toHaveBeenCalledTimes(2);
+  });
+
+  it('omits UI instructions on first turn for adapters without UI support', async () => {
+    const prompt = await buildThreadPrompt({
+      adapterName: 'email',
+      firstTurn: true,
+      messages: [message('one', 'Please investigate')],
+    });
+
+    expect(prompt.startsWith('<email>\nYou are working from a email thread.')).toBe(true);
+    expect(prompt).not.toContain('```spec');
   });
 
   it('references attached images in the transcript', async () => {
@@ -113,14 +125,16 @@ describe('buildThreadPrompt', () => {
     expect(prompt).toContain('What is wrong here?\n[Image attached: error.png]');
   });
 
-  it('omits first-turn instructions on later turns', async () => {
+  it('keeps the adapter prefix and omits first-turn instructions on later turns', async () => {
     const prompt = await buildThreadPrompt({
       adapterName: 'slack',
       firstTurn: false,
       messages: [message('one', 'Continue')],
     });
 
-    expect(prompt).toBe('[Message from Ada Lovelace (@ada) at 2026-08-17T12:00:00.000Z]\nContinue');
+    expect(prompt).toBe(
+      '<slack>\n[Message from Ada Lovelace (@ada) at 2026-08-17T12:00:00.000Z]\nContinue',
+    );
   });
 });
 

@@ -1,6 +1,6 @@
 import { cardToBlockKit } from '@chat-adapter/slack';
 import { describe, expect, it, vi } from 'vitest';
-import { parseResponseParts, uiInstructions } from '../ui';
+import { adapterPrefix, parseResponseParts, supportsUI, uiInstructions } from '../ui';
 
 const VALID_SPEC_JSONL = [
   '{"op":"add","path":"/root","value":"card"}',
@@ -14,15 +14,34 @@ const VALID_SPEC_JSONL = [
 ].join('\n');
 
 describe('uiInstructions', () => {
-  it('describes the read-only json-render chat catalog in inline mode without interactive Button', () => {
-    const prompt = uiInstructions('slack');
+  it('describes the read-only json-render chat catalog gated on supported client prefixes', () => {
+    const prompt = uiInstructions();
 
+    expect(prompt).toContain(
+      'ONLY when the latest user message starts with one of these prefixes: <slack>.',
+    );
     expect(prompt).toContain('```spec');
     expect(prompt).toContain('Table');
     expect(prompt).toContain('Chart');
     expect(prompt).toContain('LinkButton');
     expect(prompt).toContain('Never emit Button elements');
     expect(prompt).not.toContain('- Button:');
+  });
+
+  it('lists multiple supported prefixes and returns empty string when none are enabled', () => {
+    expect(uiInstructions(['slack', 'discord'])).toContain(
+      'starts with one of these prefixes: <slack>, <discord>.',
+    );
+    expect(uiInstructions([])).toBe('');
+  });
+});
+
+describe('adapterPrefix and supportsUI', () => {
+  it('formats adapter prefixes and checks supported adapters', () => {
+    expect(adapterPrefix('slack')).toBe('<slack>');
+    expect(supportsUI('slack')).toBe(true);
+    expect(supportsUI('email')).toBe(false);
+    expect(supportsUI('mock', ['mock'])).toBe(true);
   });
 });
 

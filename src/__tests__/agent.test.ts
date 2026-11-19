@@ -95,12 +95,14 @@ describe('Slack agent', () => {
       await adapter.receive('other', 'unrelated channel thread', false);
 
       expect(prompts).toHaveLength(smart ? 3 : 2);
+      expect(prompts[0]?.text.startsWith('<mock>\n')).toBe(true);
       expect(prompts[0]?.text).toContain('background context');
       expect(prompts[0]?.text).toContain('automated context');
       expect(prompts[0]?.text).toContain('first request');
       expect(prompts[0]?.text).toContain('Message from Local User (@local) at');
       expect(prompts[0]?.text).toContain('Message from Local User (@local, bot) at');
       expect(prompts[0]?.text).toContain('Z (timezone: Europe/Madrid)');
+      expect(prompts[1]?.text.startsWith('<mock>\n')).toBe(true);
       expect(prompts[1]?.text).not.toContain('background context');
       expect(prompts[1]?.text).not.toContain('first request');
       expect(prompts[1]?.text).toContain('new context');
@@ -345,7 +347,8 @@ describe('Slack agent', () => {
     expect(adapter.reactions).toEqual([]);
   });
 
-  it('posts generative UI cards when OpenCode emits a ```spec block', async () => {
+  it('posts generative UI cards when OpenCode emits a ```spec block for a UI-enabled adapter', async () => {
+    const prompts: string[] = [];
     const messages: Array<
       | { id: string; metadata?: Record<string, unknown>; type: 'user' }
       | { content: Array<{ text: string; type: 'text' }>; id: string; type: 'assistant' }
@@ -373,6 +376,74 @@ describe('Slack agent', () => {
         create: vi.fn(async () => ({ id: 'session-ui' })),
         list: vi.fn(async () => ({ cursor: {}, data: [] })),
         prompt: vi.fn(async (input) => {
+          prompts.push(input.text);
+          messages.push(
+            { id: 'user-1', metadata: input.metadata, type: 'user' },
+            {
+              content: [{ text: cardResponse, type: 'text' }],
+              id: 'assistant-1',
+              type: 'assistant',
+            },
+          );
+        }),
+        update: vi.fn(async () => {}),
+        wait: vi.fn(async () => {}),
+      },
+    } as unknown as OpenCodeClient;
+    const adapter = new MockAdapter('remotecode');
+    const bot = createAgent({
+      adapters: { mock: adapter },
+      allowedUsers: ['local-user'],
+      config: {
+        agent: 'build',
+        model: { id: 'model', providerID: 'provider', variant: 'high' },
+        reposRoot: '/tmp',
+        smallModel: { id: 'small-model', providerID: 'provider' },
+        workspaceRoot: '/tmp/workspaces',
+      },
+      openCode: client,
+      state: createMemoryState(),
+      uiAdapters: ['mock'],
+      userName: 'remotecode',
+      workspaceForThread: async ({ repositoryRoot }) => repositoryRoot,
+    });
+    bots.push(bot);
+    await bot.initialize();
+
+    await adapter.receive('deploy', 'summarize release v1.2');
+    expect(prompts[0]?.startsWith('<mock>\n')).toBe(true);
+    expect(prompts[0]).toContain('starts with one of these prefixes: <mock>.');
+    expect(adapter.cards).toHaveLength(1);
+    expect(adapter.cards[0]?.title).toBe('Release v1.2');
+    expect(adapter.outputs[0]).toBe('Here is the release summary:');
+    expect(adapter.outputs[1]).toContain('Status: Ready');
+    expect(adapter.outputs[1]).toContain('[Link: View PR (https://github.com/org/repo/pull/42)]');
+  });
+
+  it('posts plain markdown without parsing cards for adapters without UI support', async () => {
+    const prompts: string[] = [];
+    const messages: Array<
+      | { id: string; metadata?: Record<string, unknown>; type: 'user' }
+      | { content: Array<{ text: string; type: 'text' }>; id: string; type: 'assistant' }
+    > = [];
+    const cardResponse = [
+      '```spec',
+      '{"op":"add","path":"/root","value":"card"}',
+      '{"op":"add","path":"/elements/card","value":{"type":"Card","props":{"title":"Release v1.2"},"children":[]}}',
+      '```',
+    ].join('\n');
+    const client = {
+      generate: { text: vi.fn(async () => ({ text: 'Release v1.2' })) },
+      message: {
+        list: vi.fn(async () => ({ cursor: {}, data: [...messages].reverse() })),
+      },
+      permission: { list: vi.fn(async () => []), reply: vi.fn(async () => {}) },
+      question: { list: vi.fn(async () => []), reply: vi.fn(async () => {}) },
+      session: {
+        create: vi.fn(async () => ({ id: 'session-no-ui' })),
+        list: vi.fn(async () => ({ cursor: {}, data: [] })),
+        prompt: vi.fn(async (input) => {
+          prompts.push(input.text);
           messages.push(
             { id: 'user-1', metadata: input.metadata, type: 'user' },
             {
@@ -406,10 +477,9 @@ describe('Slack agent', () => {
     await bot.initialize();
 
     await adapter.receive('deploy', 'summarize release v1.2');
-    expect(adapter.cards).toHaveLength(1);
-    expect(adapter.cards[0]?.title).toBe('Release v1.2');
-    expect(adapter.outputs[0]).toBe('Here is the release summary:');
-    expect(adapter.outputs[1]).toContain('Status: Ready');
-    expect(adapter.outputs[1]).toContain('[Link: View PR (https://github.com/org/repo/pull/42)]');
+    expect(prompts[0]?.startsWith('<mock>\n')).toBe(true);
+    expect(prompts[0]).not.toContain('```spec');
+    expect(adapter.cards).toHaveLength(0);
+    expect(adapter.outputs).toEqual([cardResponse]);
   });
 });
