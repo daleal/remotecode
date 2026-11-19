@@ -10,6 +10,7 @@ const slack = createSlackAdapter({
   appToken: env.SLACK_APP_TOKEN,
   botToken: env.SLACK_BOT_TOKEN,
   mode: 'socket',
+  sessionTitle: false,
   userName: env.SLACK_BOT_NAME,
 });
 const timezoneCache = new Map<string, Promise<string | undefined>>();

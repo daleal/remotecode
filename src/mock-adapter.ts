@@ -11,6 +11,8 @@ import {
   type FetchOptions,
   type FormattedContent,
   type RawMessage,
+  type StreamChunk,
+  type StreamOptions,
   type ThreadInfo,
 } from 'chat';
 
@@ -32,11 +34,16 @@ export class MockAdapter implements Adapter<MockThreadID, MockRawMessage> {
   readonly name = 'mock';
   readonly userName: string;
   readonly botUserId = 'mock-bot';
+  readonly supportsTurnCancellation = true;
+  readonly assistantTitles: string[] = [];
   readonly cards: CardElement[] = [];
   readonly ephemeralOutputs: Array<{ text: string; userId: string }> = [];
   readonly outputs: string[] = [];
   readonly reactions: Array<{ emoji: string; messageId: string }> = [];
   readonly removedReactions: Array<{ emoji: string; messageId: string }> = [];
+  readonly streamChunks: Array<string | StreamChunk> = [];
+  readonly typingStatuses: string[] = [];
+  endTypingCount = 0;
 
   private chat?: ChatInstance;
   private counter = 0;
@@ -148,7 +155,44 @@ export class MockAdapter implements Adapter<MockThreadID, MockRawMessage> {
     return stringifyMarkdown(content);
   }
 
-  async startTyping() {}
+  async startTyping(_threadId: string, status?: string) {
+    this.typingStatuses.push(status ?? '');
+  }
+
+  async endTyping() {
+    this.endTypingCount += 1;
+  }
+
+  async setAssistantTitle(_channelId: string, _threadTs: string, title: string) {
+    this.assistantTitles.push(title);
+  }
+
+  async stream(
+    threadId: string,
+    textStream: AsyncIterable<string | StreamChunk>,
+    options?: StreamOptions,
+  ): Promise<RawMessage<MockRawMessage>> {
+    let accumulated = '';
+    for await (const chunk of textStream) {
+      if (options?.signal?.aborted) break;
+      this.streamChunks.push(chunk);
+      if (typeof chunk === 'string') {
+        accumulated += chunk;
+      } else if (chunk.type === 'markdown_text') {
+        accumulated += chunk.text;
+      } else if (chunk.type === 'task_update') {
+        console.log(`[task ${chunk.status}] ${chunk.title}`);
+      }
+    }
+    const text = accumulated.trim();
+    const message = this.makeMessage(threadId, text, true);
+    this.messages(threadId).push(message);
+    if (text) {
+      this.outputs.push(text);
+      console.log(`\n${this.userName}: ${text}\n`);
+    }
+    return this.raw(message);
+  }
 
   private makeMessage(
     threadId: string,

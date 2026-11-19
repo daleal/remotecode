@@ -26,6 +26,7 @@ oauth_config:
 settings:
   event_subscriptions:
     bot_events:
+      - agent_session_stopped
       - app_context_changed
       - app_home_opened
       - app_mention

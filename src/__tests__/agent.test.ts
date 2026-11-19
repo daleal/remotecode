@@ -108,20 +108,8 @@ describe('Slack agent', () => {
       expect(prompts[1]?.text).toContain('new context');
       expect(prompts[smart ? 2 : 1]?.text).toContain('second request');
       if (smart) expect(prompts[2]?.text).not.toContain('new context');
-      expect(adapter.reactions.map((reaction) => reaction.emoji)).toEqual([
-        'gear',
-        'eyes',
-        'white_check_mark',
-        'eyes',
-        'white_check_mark',
-        ...(smart ? ['eyes', 'white_check_mark'] : []),
-      ]);
-      expect(adapter.removedReactions.map((reaction) => reaction.emoji)).toEqual([
-        'gear',
-        'eyes',
-        'eyes',
-        ...(smart ? ['eyes'] : []),
-      ]);
+      expect(adapter.reactions).toEqual([]);
+      expect(adapter.removedReactions).toEqual([]);
       expect(adapter.outputs).toEqual([
         'response 1',
         'response 2',
@@ -190,8 +178,8 @@ describe('Slack agent', () => {
     await adapter.receive('one', 'fail');
 
     expect(adapter.outputs).toEqual([]);
-    expect(adapter.reactions.map((reaction) => reaction.emoji)).toEqual(['gear', 'eyes', 'x']);
-    expect(adapter.removedReactions.map((reaction) => reaction.emoji)).toEqual(['gear', 'eyes']);
+    expect(adapter.reactions.map((reaction) => reaction.emoji)).toEqual(['x']);
+    expect(adapter.removedReactions).toEqual([]);
     expect(errorLog).toHaveBeenCalledWith(expect.objectContaining({ message: 'private failure' }));
   });
 
@@ -311,8 +299,8 @@ describe('Slack agent', () => {
 
     await adapter.receive('one', 'fail');
 
-    expect(adapter.reactions.map((reaction) => reaction.emoji)).toEqual(['gear', 'x']);
-    expect(adapter.removedReactions.map((reaction) => reaction.emoji)).toEqual(['gear']);
+    expect(adapter.reactions.map((reaction) => reaction.emoji)).toEqual(['x']);
+    expect(adapter.removedReactions).toEqual([]);
   });
 
   it('ignores mentions from users outside the allowlist', async () => {
@@ -481,5 +469,301 @@ describe('Slack agent', () => {
     expect(prompts[0]).not.toContain('```spec');
     expect(adapter.cards).toHaveLength(0);
     expect(adapter.outputs).toEqual([cardResponse]);
+  });
+
+  it('streams tool progress and prose live, then posts rendered cards and sets assistant title', async () => {
+    let releaseWait = () => {};
+    const waitPromise = new Promise<void>((resolve) => {
+      releaseWait = resolve;
+    });
+    const specBlock = [
+      '```spec',
+      '{"op":"add","path":"/root","value":"card"}',
+      '{"op":"add","path":"/elements/card","value":{"type":"Card","props":{"title":"Checks"},"children":["body"]}}',
+      '{"op":"add","path":"/elements/body","value":{"type":"Text","props":{"content":"All green"},"children":[]}}',
+      '```',
+    ].join('\n');
+    const fullText = `Done checking.\n\n${specBlock}`;
+    const events: unknown[] = [
+      {
+        data: {
+          assistantMessageID: 'assistant-1',
+          id: 'tool-1',
+          name: 'bash',
+          sessionID: 'session-stream',
+        },
+        type: 'session.tool.input.started',
+      },
+      {
+        data: {
+          assistantMessageID: 'assistant-1',
+          executed: true,
+          id: 'tool-1',
+          input: { command: 'bun run test', description: 'Run test suite' },
+          sessionID: 'session-stream',
+        },
+        type: 'session.tool.called',
+      },
+      {
+        data: {
+          assistantMessageID: 'assistant-1',
+          executed: true,
+          id: 'tool-1',
+          sessionID: 'session-stream',
+        },
+        type: 'session.tool.success',
+      },
+      {
+        data: {
+          assistantMessageID: 'assistant-1',
+          delta: 'Done checking.\n\n',
+          ordinal: 0,
+          sessionID: 'session-stream',
+        },
+        type: 'session.text.delta',
+      },
+      {
+        data: {
+          assistantMessageID: 'assistant-1',
+          delta: specBlock,
+          ordinal: 0,
+          sessionID: 'session-stream',
+        },
+        type: 'session.text.delta',
+      },
+    ];
+    let prompted = false;
+    const client = {
+      event: {
+        subscribe: vi.fn(async function* () {
+          for (const event of events) yield event;
+          releaseWait();
+        }),
+      },
+      generate: { text: vi.fn(async () => ({ text: 'Test suite run' })) },
+      message: {
+        list: vi.fn(async () => ({
+          cursor: {},
+          data: prompted
+            ? [
+                {
+                  content: [{ text: fullText, type: 'text' }],
+                  id: 'assistant-1',
+                  type: 'assistant',
+                },
+              ]
+            : [],
+        })),
+      },
+      permission: { list: vi.fn(async () => []), reply: vi.fn(async () => {}) },
+      session: {
+        create: vi.fn(async () => ({ id: 'session-stream' })),
+        list: vi.fn(async () => ({ cursor: {}, data: [] })),
+        prompt: vi.fn(async () => {
+          prompted = true;
+        }),
+        update: vi.fn(async () => {}),
+        wait: vi.fn(() => waitPromise),
+      },
+    } as unknown as OpenCodeClient;
+    const adapter = new MockAdapter('remotecode');
+    const lifecycle: string[] = [];
+    const origPostEphemeral = adapter.postEphemeral.bind(adapter);
+    vi.spyOn(adapter, 'postEphemeral').mockImplementation(async (...args) => {
+      lifecycle.push('ephemeral');
+      return origPostEphemeral(...args);
+    });
+    const origStartTyping = adapter.startTyping.bind(adapter);
+    vi.spyOn(adapter, 'startTyping').mockImplementation(async (threadId, status) => {
+      lifecycle.push(`typing:${status ?? ''}`);
+      return origStartTyping(threadId, status);
+    });
+    const bot = createAgent({
+      adapters: { mock: adapter },
+      allowedUsers: ['local-user'],
+      config: {
+        agent: 'build',
+        model: { id: 'model', providerID: 'provider', variant: 'high' },
+        reposRoot: '/tmp',
+        smallModel: { id: 'small-model', providerID: 'provider' },
+        workspaceRoot: '/tmp/workspaces',
+      },
+      openCode: client,
+      state: createMemoryState(),
+      uiAdapters: ['mock'],
+      userName: 'remotecode',
+      workspaceForThread: async ({ repositoryRoot }) => repositoryRoot,
+    });
+    bots.push(bot);
+    await bot.initialize();
+
+    await adapter.receive('stream', 'run tests');
+
+    expect(lifecycle.slice(0, 3)).toEqual([
+      'typing:Setting up workspace...',
+      'ephemeral',
+      'typing:Thinking...',
+    ]);
+    expect(adapter.typingStatuses).toContain('Run test suite...');
+    expect(
+      adapter.streamChunks.filter(
+        (chunk) => typeof chunk !== 'string' && chunk.type !== 'markdown_text',
+      ),
+    ).toEqual([]);
+    expect(adapter.cards).toHaveLength(1);
+    expect(adapter.cards[0]?.title).toBe('Checks');
+    expect(adapter.outputs[0]).toBe('Done checking.');
+    expect(adapter.assistantTitles).toEqual(['Test suite run']);
+    expect(adapter.reactions).toEqual([]);
+  });
+
+  it('steers an active turn when a follow-up message arrives mid-turn', async () => {
+    const promptCalls: Array<{ delivery?: string; text: string }> = [];
+    let releaseFirstWait = () => {};
+    let waitCount = 0;
+    let firstPromptSent = () => {};
+    const firstPromptReady = new Promise<void>((resolve) => {
+      firstPromptSent = resolve;
+    });
+    const messages: unknown[] = [];
+
+    const client = {
+      generate: { text: vi.fn(async () => ({ text: 'Auth refactor' })) },
+      message: {
+        list: vi.fn(async () => ({ cursor: {}, data: [...messages].reverse() })),
+      },
+      permission: { list: vi.fn(async () => []), reply: vi.fn(async () => {}) },
+      session: {
+        create: vi.fn(async () => ({ id: 'session-steer' })),
+        list: vi.fn(async () => ({ cursor: {}, data: [] })),
+        prompt: vi.fn(
+          async (input: {
+            delivery?: string;
+            metadata?: Record<string, unknown>;
+            text: string;
+          }) => {
+            promptCalls.push({ delivery: input.delivery, text: input.text });
+            messages.push({
+              id: `user-${promptCalls.length}`,
+              metadata: input.metadata,
+              type: 'user',
+            });
+            if (promptCalls.length === 1) {
+              firstPromptSent();
+            } else {
+              messages.push({
+                content: [{ text: 'Switched to cookies!', type: 'text' }],
+                id: 'assistant-steered',
+                type: 'assistant',
+              });
+              releaseFirstWait();
+            }
+          },
+        ),
+        update: vi.fn(async () => {}),
+        wait: vi.fn(async () => {
+          waitCount += 1;
+          if (waitCount === 1) {
+            await new Promise<void>((resolve) => {
+              releaseFirstWait = resolve;
+            });
+          }
+        }),
+      },
+    } as unknown as OpenCodeClient;
+    const adapter = new MockAdapter('remotecode');
+    const bot = createAgent({
+      adapters: { mock: adapter },
+      allowedUsers: ['local-user'],
+      config: {
+        agent: 'build',
+        model: { id: 'model', providerID: 'provider', variant: 'high' },
+        reposRoot: '/tmp',
+        smallModel: { id: 'small-model', providerID: 'provider' },
+        workspaceRoot: '/tmp/workspaces',
+      },
+      openCode: client,
+      state: createMemoryState(),
+      userName: 'remotecode',
+      workspaceForThread: async ({ repositoryRoot }) => repositoryRoot,
+    });
+    bots.push(bot);
+    await bot.initialize();
+
+    const firstTurn = adapter.receive('steer', 'refactor auth to JWT');
+    await firstPromptReady;
+    await adapter.receive('steer', 'actually use cookies instead');
+    await firstTurn;
+
+    expect(promptCalls).toHaveLength(2);
+    expect(promptCalls[0]?.delivery).toBeUndefined();
+    expect(promptCalls[0]?.text).toContain('refactor auth to JWT');
+    expect(promptCalls[1]?.delivery).toBe('steer');
+    expect(promptCalls[1]?.text).toContain('actually use cookies instead');
+    expect(promptCalls[1]?.text.startsWith('<mock>\n')).toBe(true);
+    expect(adapter.outputs).toEqual(['Switched to cookies!']);
+    expect(adapter.typingStatuses).toContain('Updating approach...');
+    expect(adapter.reactions).toEqual([]);
+  });
+
+  it('interrupts OpenCode and reacts only on the latest steered message when cancelled', async () => {
+    const interrupt = vi.fn(async () => ({ interrupted: true }));
+    let promptCount = 0;
+    let firstPromptSent = () => {};
+    const firstPromptReady = new Promise<void>((resolve) => {
+      firstPromptSent = resolve;
+    });
+    const client = {
+      generate: { text: vi.fn(async () => ({ text: 'Stopped' })) },
+      message: { list: vi.fn(async () => ({ cursor: {}, data: [] })) },
+      permission: { list: vi.fn(async () => []), reply: vi.fn(async () => {}) },
+      session: {
+        create: vi.fn(async () => ({ id: 'session-stop' })),
+        interrupt,
+        list: vi.fn(async () => ({ cursor: {}, data: [] })),
+        prompt: vi.fn(async () => {
+          promptCount += 1;
+          if (promptCount === 1) firstPromptSent();
+        }),
+        update: vi.fn(async () => {}),
+        wait: vi.fn(
+          (_input: unknown, requestOptions?: { signal?: AbortSignal }) =>
+            new Promise<void>((_resolve, reject) => {
+              requestOptions?.signal?.addEventListener('abort', () => {
+                reject(new DOMException('Aborted', 'AbortError'));
+              });
+            }),
+        ),
+      },
+    } as unknown as OpenCodeClient;
+    const adapter = new MockAdapter('remotecode');
+    const bot = createAgent({
+      adapters: { mock: adapter },
+      allowedUsers: ['local-user'],
+      config: {
+        agent: 'build',
+        model: { id: 'model', providerID: 'provider', variant: 'high' },
+        reposRoot: '/tmp',
+        smallModel: { id: 'small-model', providerID: 'provider' },
+        workspaceRoot: '/tmp/workspaces',
+      },
+      openCode: client,
+      state: createMemoryState(),
+      userName: 'remotecode',
+      workspaceForThread: async ({ repositoryRoot }) => repositoryRoot,
+    });
+    bots.push(bot);
+    await bot.initialize();
+
+    const running = adapter.receive('stop', 'do a long task');
+    await firstPromptReady;
+    await adapter.receive('stop', 'change direction');
+    await bot.abortTurn(adapter.encodeThreadId({ channel: 'local', thread: 'stop' }));
+    await running;
+
+    expect(interrupt).toHaveBeenCalledWith({ sessionID: 'session-stop' });
+    expect(adapter.reactions).toEqual([{ emoji: 'octagonal_sign', messageId: 'mock-3' }]);
+    expect(adapter.endTypingCount).toBeGreaterThanOrEqual(1);
+    expect(adapter.outputs).toEqual([]);
   });
 });
