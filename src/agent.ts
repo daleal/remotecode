@@ -6,6 +6,7 @@ import { runSessionTurn } from './session-turn';
 import { shouldRespond } from './should-respond';
 import { buildThreadPrompt, messagesSince, threadImageFiles } from './thread-prompt';
 import { getOrCreateThreadSession, type ThreadState } from './thread-session';
+import { parseResponseParts } from './ui';
 import { createThreadWorkspace } from './workspace';
 
 type CreateAgentOptions = {
@@ -85,7 +86,7 @@ export const createAgent = (options: CreateAgentOptions) => {
         triggeringMessage: message,
         userTimezone: options.userTimezone,
       });
-      await thread.post({ markdown: response });
+      await postResponse(thread, response);
     } catch (error) {
       console.error(error);
       outcome = 'x';
@@ -103,6 +104,16 @@ export const createAgent = (options: CreateAgentOptions) => {
   bot.onSubscribedMessage(handleMessage);
 
   return bot;
+};
+
+const postResponse = async (thread: Thread<ThreadState>, response: string) => {
+  for (const part of parseResponseParts(response)) {
+    if (part.type === 'card') {
+      await thread.post(part.card);
+    } else {
+      await thread.post({ markdown: part.markdown });
+    }
+  }
 };
 
 const addReaction = async ({ emoji, messageID, thread }: ReactionOptions) => {

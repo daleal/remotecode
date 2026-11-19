@@ -13,12 +13,14 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@chat-adapter/slack": "^4.38.0",
-    "@chat-adapter/state-memory": "^4.38.0",
+    "@chat-adapter/slack": "^4.45.0",
+    "@chat-adapter/state-memory": "^4.45.0",
+    "@json-render/chat": "^0.23.2",
+    "@json-render/core": "^0.23.2",
     "@opencode/client": "^2.0.6",
     "@openrouter/ai-sdk-provider": "^3.1.0",
     "ai": "^7.0.105",
-    "chat": "^4.38.0",
+    "chat": "^4.45.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

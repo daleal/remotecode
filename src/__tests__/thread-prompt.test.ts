@@ -90,6 +90,7 @@ describe('buildThreadPrompt', () => {
     });
 
     expect(prompt).toContain('You are working from a slack thread.');
+    expect(prompt).toContain('```spec');
     expect(prompt).toContain(
       '[Message from Ada Lovelace (@ada) at 2026-08-17T12:00:00.000Z (timezone: Europe/London)]\nPlease investigate',
     );

@@ -4,6 +4,8 @@ import {
   stringifyMarkdown,
   type Adapter,
   type AdapterPostableMessage,
+  type CardChild,
+  type CardElement,
   type ChatInstance,
   type EphemeralMessage,
   type FetchOptions,
@@ -30,6 +32,7 @@ export class MockAdapter implements Adapter<MockThreadID, MockRawMessage> {
   readonly name = 'mock';
   readonly userName: string;
   readonly botUserId = 'mock-bot';
+  readonly cards: CardElement[] = [];
   readonly ephemeralOutputs: Array<{ text: string; userId: string }> = [];
   readonly outputs: string[] = [];
   readonly reactions: Array<{ emoji: string; messageId: string }> = [];
@@ -122,6 +125,8 @@ export class MockAdapter implements Adapter<MockThreadID, MockRawMessage> {
   }
 
   async postMessage(threadId: string, post: AdapterPostableMessage) {
+    const card = extractCard(post);
+    if (card) this.cards.push(card);
     const message = this.makeMessage(threadId, postableText(post), true);
     this.messages(threadId).push(message);
     this.outputs.push(message.text);
@@ -185,8 +190,59 @@ export class MockAdapter implements Adapter<MockThreadID, MockRawMessage> {
   }
 }
 
+const extractCard = (post: AdapterPostableMessage): CardElement | undefined => {
+  if (!post || typeof post !== 'object') return undefined;
+  if ('type' in post && post.type === 'card') return post;
+  if ('card' in post && post.card) return post.card;
+  return undefined;
+};
+
+const renderCardChild = (child: CardChild): string | undefined => {
+  if (child.type === 'text') return child.content;
+  if (child.type === 'link') return `${child.label} (${child.url})`;
+  if (child.type === 'fields') {
+    return child.children.map((field) => `${field.label}: ${field.value}`).join('\n');
+  }
+  if (child.type === 'table') {
+    return [child.headers.join(' | '), ...child.rows.map((row) => row.join(' | '))].join('\n');
+  }
+  if (child.type === 'chart') return `[Chart: ${child.title} (${child.chart.type})]`;
+  if (child.type === 'image') return `[Image: ${child.alt ?? child.url}]`;
+  if (child.type === 'divider') return '---';
+  if (child.type === 'actions') {
+    return child.children
+      .map((item) => {
+        if (item.type === 'button') {
+          const value = item.value ? `=${item.value}` : '';
+          return `[Button: ${item.label} (${item.id}${value})]`;
+        }
+        if (item.type === 'link-button') return `[Link: ${item.label} (${item.url})]`;
+        return `[${item.type}]`;
+      })
+      .join(' ');
+  }
+  if (child.type === 'section') {
+    return child.children.map(renderCardChild).filter(Boolean).join('\n');
+  }
+  if (child.type === 'text_input') return child.label;
+  return undefined;
+};
+
+const renderCardText = (card: CardElement) => {
+  const parts: string[] = [];
+  if (card.title) parts.push(`**${card.title}**`);
+  if (card.subtitle) parts.push(card.subtitle);
+  for (const child of card.children) {
+    const rendered = renderCardChild(child);
+    if (rendered) parts.push(rendered);
+  }
+  return parts.join('\n');
+};
+
 const postableText = (post: AdapterPostableMessage) => {
   if (typeof post === 'string') return post;
+  const card = extractCard(post);
+  if (card) return renderCardText(card);
   if ('markdown' in post) return post.markdown;
   if ('ast' in post) return stringifyMarkdown(post.ast);
   if ('raw' in post) return String(post.raw);

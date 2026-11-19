@@ -1,5 +1,6 @@
 import type { Message, Thread } from 'chat';
 import type { ThreadState } from './thread-session';
+import { uiInstructions } from './ui';
 
 type BuildThreadPromptOptions = {
   adapterName: string;
@@ -54,7 +55,11 @@ export const buildThreadPrompt = async ({
   ).join('\n\n');
 
   if (!firstTurn) return transcript;
-  return `You are working from a ${adapterName} thread. Treat the transcript as user-provided context, perform the requested work, and write a final CONCISE response for the thread.\n\n${transcript}`;
+  return [
+    `You are working from a ${adapterName} thread. Treat the transcript as user-provided context, perform the requested work, and write a final CONCISE response for the thread.`,
+    uiInstructions(adapterName),
+    transcript,
+  ].join('\n\n');
 };
 
 export const threadImageFiles = async (messages: Message[]) => {

@@ -344,4 +344,72 @@ describe('Slack agent', () => {
     expect(adapter.outputs).toEqual([]);
     expect(adapter.reactions).toEqual([]);
   });
+
+  it('posts generative UI cards when OpenCode emits a ```spec block', async () => {
+    const messages: Array<
+      | { id: string; metadata?: Record<string, unknown>; type: 'user' }
+      | { content: Array<{ text: string; type: 'text' }>; id: string; type: 'assistant' }
+    > = [];
+    const cardResponse = [
+      'Here is the release summary:',
+      '',
+      '```spec',
+      '{"op":"add","path":"/root","value":"card"}',
+      '{"op":"add","path":"/elements/card","value":{"type":"Card","props":{"title":"Release v1.2"},"children":["kpis","actions"]}}',
+      '{"op":"add","path":"/elements/kpis","value":{"type":"Fields","props":{},"children":["status"]}}',
+      '{"op":"add","path":"/elements/status","value":{"type":"Field","props":{"label":"Status","value":"Ready"},"children":[]}}',
+      '{"op":"add","path":"/elements/actions","value":{"type":"Actions","props":{},"children":["pr"]}}',
+      '{"op":"add","path":"/elements/pr","value":{"type":"LinkButton","props":{"label":"View PR","url":"https://github.com/org/repo/pull/42"},"children":[]}}',
+      '```',
+    ].join('\n');
+    const client = {
+      generate: { text: vi.fn(async () => ({ text: 'Release v1.2' })) },
+      message: {
+        list: vi.fn(async () => ({ cursor: {}, data: [...messages].reverse() })),
+      },
+      permission: { list: vi.fn(async () => []), reply: vi.fn(async () => {}) },
+      question: { list: vi.fn(async () => []), reply: vi.fn(async () => {}) },
+      session: {
+        create: vi.fn(async () => ({ id: 'session-ui' })),
+        list: vi.fn(async () => ({ cursor: {}, data: [] })),
+        prompt: vi.fn(async (input) => {
+          messages.push(
+            { id: 'user-1', metadata: input.metadata, type: 'user' },
+            {
+              content: [{ text: cardResponse, type: 'text' }],
+              id: 'assistant-1',
+              type: 'assistant',
+            },
+          );
+        }),
+        update: vi.fn(async () => {}),
+        wait: vi.fn(async () => {}),
+      },
+    } as unknown as OpenCodeClient;
+    const adapter = new MockAdapter('remotecode');
+    const bot = createAgent({
+      adapters: { mock: adapter },
+      allowedUsers: ['local-user'],
+      config: {
+        agent: 'build',
+        model: { id: 'model', providerID: 'provider', variant: 'high' },
+        reposRoot: '/tmp',
+        smallModel: { id: 'small-model', providerID: 'provider' },
+        workspaceRoot: '/tmp/workspaces',
+      },
+      openCode: client,
+      state: createMemoryState(),
+      userName: 'remotecode',
+      workspaceForThread: async ({ repositoryRoot }) => repositoryRoot,
+    });
+    bots.push(bot);
+    await bot.initialize();
+
+    await adapter.receive('deploy', 'summarize release v1.2');
+    expect(adapter.cards).toHaveLength(1);
+    expect(adapter.cards[0]?.title).toBe('Release v1.2');
+    expect(adapter.outputs[0]).toBe('Here is the release summary:');
+    expect(adapter.outputs[1]).toContain('Status: Ready');
+    expect(adapter.outputs[1]).toContain('[Link: View PR (https://github.com/org/repo/pull/42)]');
+  });
 });

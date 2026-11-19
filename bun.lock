@@ -5,12 +5,14 @@
     "": {
       "name": "remotecode",
       "dependencies": {
-        "@chat-adapter/slack": "^4.38.0",
-        "@chat-adapter/state-memory": "^4.38.0",
+        "@chat-adapter/slack": "^4.45.0",
+        "@chat-adapter/state-memory": "^4.45.0",
+        "@json-render/chat": "^0.23.2",
+        "@json-render/core": "^0.23.2",
         "@opencode/client": "^2.0.6",
         "@openrouter/ai-sdk-provider": "^3.1.0",
         "ai": "^7.0.105",
-        "chat": "^4.38.0",
+        "chat": "^4.45.0",
         "zod": "^4.4.3",
       },
       "devDependencies": {
@@ -32,17 +34,23 @@
 
     "@ai-sdk/provider-utils": ["@ai-sdk/provider-utils@5.0.46", "", { "dependencies": { "@ai-sdk/provider": "4.0.18", "@standard-schema/spec": "^1.1.0", "@workflow/serde": "4.1.0", "eventsource-parser": "^3.0.8", "undici": "^7.29.0" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-XYpiJbd3jW12HC4yzqNmUuPbZ7ooKXVxQjnXCC3O/VzzV2OvRWD6lDFUYYPLs/ZJgTcWWUkmHL/vIyvnxyplVA=="],
 
-    "@chat-adapter/shared": ["@chat-adapter/shared@4.38.0", "", { "dependencies": { "chat": "4.38.0" } }, "sha512-mBOAVJ18eB1w8yOEhVRfQGvR0ALg/VawndP/mht4Da3xXJQIiwUid8v/G+wm9XuQieJyIG4JL9dIUed4YUHDdQ=="],
+    "@chat-adapter/catalog": ["@chat-adapter/catalog@4.45.0", "", {}, "sha512-oP8ySvXTYRVRIusTehLTvpwynMLkEcaFZBASZRDDfNFZzSO02xQX1kVgMAz4VbtiMTMU6k01tjZE4KEDbrmonA=="],
 
-    "@chat-adapter/slack": ["@chat-adapter/slack@4.38.0", "", { "dependencies": { "@chat-adapter/shared": "4.38.0", "@slack/socket-mode": "^2.0.5", "@slack/web-api": "^7.18.0", "chat": "4.38.0" } }, "sha512-AzLU+yYlPUJwYvj+0+nwp/b+oQfYAQuRY0hjYhSN3VGaksyhLtvdn3ir3Buwly+V/ojAtD7D7EvXOIAzZtCY6A=="],
+    "@chat-adapter/shared": ["@chat-adapter/shared@4.45.0", "", { "dependencies": { "chat": "4.45.0" } }, "sha512-q2V7uNMqIcT1OE6E0ckz9QLtHj2rCyn/XA9apNz0u0XP5Iex7KQBqnXytUyCLEncHD4R9tNTES6AWfjpRESrKQ=="],
 
-    "@chat-adapter/state-memory": ["@chat-adapter/state-memory@4.38.0", "", { "dependencies": { "chat": "4.38.0" } }, "sha512-fqwGvFp/NC8ocuv1RRjlzsjt9H23f5D+RcdtyYY5RiEOOWeaxEtZheM36gpBjOr2NTzYfNz/1aOQNRWDYsJTsg=="],
+    "@chat-adapter/slack": ["@chat-adapter/slack@4.45.0", "", { "dependencies": { "@chat-adapter/shared": "4.45.0", "@slack/socket-mode": "^2.0.5", "@slack/web-api": "^7.18.0", "chat": "4.45.0" } }, "sha512-SJZ/XOclZjXFd4iUXL9uvkLZdb8IfQ4E4WmR52j5B2hdFrBV8j3DzkdorvupKgNTYUhD73vBIFVaSZKwqkuexA=="],
+
+    "@chat-adapter/state-memory": ["@chat-adapter/state-memory@4.45.0", "", { "dependencies": { "chat": "4.45.0" } }, "sha512-50wq0veX52i5ayyz01coPJI/XRNt/DlncGUFB0MEFqtJVg4qSRLM/W7lCKDj9TCvJeUvyLgkF4yLmmaNEuUB/w=="],
 
     "@daleal/oxd-config-core": ["@daleal/oxd-config-core@0.1.0", "", { "peerDependencies": { "oxfmt": "^0.58.0", "oxlint": "^1.73.0" } }, "sha512-+JXVDt9M9VGeHm2TN6jsygxyhf1ubzONf1DsjW/gA0qlkt/ciM1usedd5dbeapDT0br9rkSgGjmCi/+zXrjo8Q=="],
 
     "@daleal/oxd-config-ts": ["@daleal/oxd-config-ts@0.1.0", "", { "dependencies": { "@daleal/oxd-config-core": "^0.1.0", "oxlint-plugin-eslint": "1.73.0" }, "peerDependencies": { "oxfmt": "^0.58.0", "oxlint": "^1.73.0", "typescript": "^5 || ^6 || ^7" } }, "sha512-7RIVjDZdfz7JZ95+xHZV8drA4/Vh7EyVmJfSqdrNqW8SPhKgt0U7IwjDUNoTKc7QuNJkYt049vtHVnNNs+E25A=="],
 
     "@jridgewell/sourcemap-codec": ["@jridgewell/sourcemap-codec@1.5.5", "", {}, "sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og=="],
+
+    "@json-render/chat": ["@json-render/chat@0.23.2", "", { "dependencies": { "@json-render/core": "0.23.2" }, "peerDependencies": { "chat": "^4.43.0", "zod": "^4.0.0" } }, "sha512-a7nIr/Ac6kSjj4epjkuxoytEMu6pLsyYHG5Wm2tOjk61A7c93gnC/l/fX6bLcgyw7DmqFugtaaaKpcynM8taHg=="],
+
+    "@json-render/core": ["@json-render/core@0.23.2", "", { "dependencies": { "zod": "^4.3.6" } }, "sha512-2BRXjS2uWLLmlPnlw9kvtCYJFSmnYqBhUyqf6dx7MheKhedGoz80rf4s0XTdGDVue2MLwnFqpcamcEnHi1HLeQ=="],
 
     "@msgpackr-extract/msgpackr-extract-darwin-arm64": ["@msgpackr-extract/msgpackr-extract-darwin-arm64@3.0.4", "", { "os": "darwin", "cpu": "arm64" }, "sha512-LCkGo6JDfaBhgST7UpPWgNgLINpcpabaHfyz5OBx75nUYxBsaEPxjnyNjWpeb/xBup/682QnBfRBy2/LvPutZQ=="],
 
@@ -284,7 +292,7 @@
 
     "character-entities": ["character-entities@2.0.2", "", {}, "sha512-shx7oQ0Awen/BRIdkjkvz54PnEEI/EjwXDSIZp86/KKdbafHh1Df/RYGBhn4hbe2+uKC9FnT5UCEdyPz3ai9hQ=="],
 
-    "chat": ["chat@4.38.0", "", { "dependencies": { "@workflow/serde": "4.1.0-beta.2", "mdast-util-to-string": "^4.0.0", "remark-gfm": "^4.0.0", "remark-parse": "^11.0.0", "remark-stringify": "^11.0.0", "remend": "^1.2.1", "unified": "^11.0.5" }, "peerDependencies": { "ai": "^6.0.182 || ^7.0.0", "workflow": "^5.0.0-beta.35", "zod": "^3.0.0 || ^4.0.0" }, "optionalPeers": ["ai", "workflow", "zod"] }, "sha512-begN9W19/kSfMPz7hl0q8CNufs6TE7ddvIERhBPjShxWRvwI6+KGVGlr9cJsNoppjE3JywvHUYUuifZa5uj6IA=="],
+    "chat": ["chat@4.45.0", "", { "dependencies": { "@chat-adapter/catalog": "4.45.0", "@workflow/serde": "4.1.0-beta.2", "mdast-util-to-string": "^4.0.0", "remark-gfm": "^4.0.0", "remark-parse": "^11.0.0", "remark-stringify": "^11.0.0", "remend": "^1.2.1", "unified": "^11.0.5" }, "peerDependencies": { "ai": "^6.0.182 || ^7.0.0", "workflow": "^5.0.0-beta.35", "zod": "^3.0.0 || ^4.0.0" }, "optionalPeers": ["ai", "workflow", "zod"] }, "sha512-7p1fkEupHEqYhXmSxLnHcK4hWEg93182/F2YxHSwqc7xtF4mekmG9EuJjRYX3aNEJJa2Rvu48A1f3ulOxxHIrA=="],
 
     "combined-stream": ["combined-stream@1.0.8", "", { "dependencies": { "delayed-stream": "~1.0.0" } }, "sha512-FQN4MRfuJeHf7cBbBMJFXhKSDq+2kAArBlmRBvcvFE5BB1HZKXtSFASDhdlz9zOYwxh8lDdnvmMOe/+5cdoEdg=="],
 
