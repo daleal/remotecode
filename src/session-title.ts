@@ -75,7 +75,9 @@ export const generateAndApplySessionTitle = async ({
     const title =
       generatedTitle.length <= 100 ? generatedTitle : `${generatedTitle.slice(0, 97)}...`;
     await client.session.update({ sessionID, title: `[${adapterName}] ${title}` });
+    return title;
   } catch (error) {
     console.error('Could not generate a session title', error);
+    return undefined;
   }
 };

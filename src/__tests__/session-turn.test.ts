@@ -1,6 +1,7 @@
 import type { OpenCodeClient } from '@opencode/client';
+import type { StreamChunk } from 'chat';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { runSessionTurn } from '../session-turn';
+import { runSessionTurn, TurnAbortedError } from '../session-turn';
 
 const metadata = {
   lastMessageID: 'thread-message-1',
@@ -207,5 +208,184 @@ describe('runSessionTurn', () => {
         sessionID: 'session-1',
       }),
     ).rejects.toThrow('Model failed');
+  });
+
+  it('streams text deltas and tool status updates from OpenCode events', async () => {
+    const chunks: StreamChunk[] = [];
+    const statuses: string[] = [];
+    let releaseWait = () => {};
+    const waitPromise = new Promise<void>((resolve) => {
+      releaseWait = resolve;
+    });
+    const events: unknown[] = [
+      {
+        data: {
+          assistantMessageID: 'assistant-old',
+          delta: 'ignored',
+          ordinal: 0,
+          sessionID: 'session-1',
+        },
+        type: 'session.text.delta',
+      },
+      {
+        data: {
+          assistantMessageID: 'other-msg',
+          delta: 'other session',
+          ordinal: 0,
+          sessionID: 'session-2',
+        },
+        type: 'session.text.delta',
+      },
+      {
+        data: {
+          assistantMessageID: 'assistant-1',
+          delta: 'Checking ',
+          ordinal: 0,
+          sessionID: 'session-1',
+        },
+        type: 'session.text.delta',
+      },
+      {
+        data: {
+          assistantMessageID: 'assistant-1',
+          delta: 'repo.',
+          ordinal: 0,
+          sessionID: 'session-1',
+        },
+        type: 'session.text.delta',
+      },
+      {
+        data: {
+          assistantMessageID: 'assistant-1',
+          id: 'tool-1',
+          name: 'read',
+          sessionID: 'session-1',
+        },
+        type: 'session.tool.input.started',
+      },
+      {
+        data: {
+          assistantMessageID: 'assistant-1',
+          executed: true,
+          id: 'tool-1',
+          input: { path: '/repo/src/agent.ts' },
+          sessionID: 'session-1',
+        },
+        type: 'session.tool.called',
+      },
+      {
+        data: {
+          assistantMessageID: 'assistant-2',
+          delta: 'All fixed.',
+          ordinal: 0,
+          sessionID: 'session-1',
+        },
+        type: 'session.text.delta',
+      },
+    ];
+
+    let prompted = false;
+    const client = {
+      event: {
+        subscribe: vi.fn(async function* () {
+          for (const event of events) yield event;
+          releaseWait();
+        }),
+      },
+      message: {
+        list: vi.fn(async () => ({
+          cursor: {},
+          data: prompted
+            ? [
+                {
+                  content: [{ text: 'All fixed.', type: 'text' }],
+                  id: 'assistant-2',
+                  type: 'assistant',
+                },
+                {
+                  content: [{ text: 'Checking repo.', type: 'text' }],
+                  id: 'assistant-1',
+                  type: 'assistant',
+                },
+                {
+                  content: [{ text: 'Old', type: 'text' }],
+                  id: 'assistant-old',
+                  type: 'assistant',
+                },
+              ]
+            : [
+                {
+                  content: [{ text: 'Old', type: 'text' }],
+                  id: 'assistant-old',
+                  type: 'assistant',
+                },
+              ],
+        })),
+      },
+      permission: { list: vi.fn(async () => []), reply: vi.fn() },
+      session: {
+        list: vi.fn(async () => ({ cursor: {}, data: [] })),
+        prompt: vi.fn(async () => {
+          prompted = true;
+        }),
+        wait: vi.fn(() => waitPromise),
+      },
+    } as unknown as OpenCodeClient;
+
+    const result = await runSessionTurn({
+      adapterName: 'slack',
+      client,
+      metadata,
+      onChunk: (chunk) => chunks.push(chunk),
+      onStatus: (status) => statuses.push(status),
+      prompt: 'Fix it',
+      sessionID: 'session-1',
+    });
+
+    expect(result).toBe('All fixed.');
+    expect(statuses).toEqual(['Reading file...', 'Reading src/agent.ts...']);
+    expect(chunks).toEqual([
+      { text: 'Checking ', type: 'markdown_text' },
+      { text: 'repo.', type: 'markdown_text' },
+      { text: '\n\n', type: 'markdown_text' },
+      { text: 'All fixed.', type: 'markdown_text' },
+    ]);
+  });
+
+  it('interrupts OpenCode and throws TurnAbortedError when aborted', async () => {
+    const controller = new AbortController();
+    const interrupt = vi.fn(async () => ({ interrupted: true }));
+    const client = {
+      message: { list: vi.fn(async () => ({ cursor: {}, data: [] })) },
+      permission: { list: vi.fn(async () => []), reply: vi.fn() },
+      session: {
+        interrupt,
+        list: vi.fn(async () => ({ cursor: {}, data: [] })),
+        prompt: vi.fn(async () => {}),
+        wait: vi.fn(
+          (_input: unknown, requestOptions?: { signal?: AbortSignal }) =>
+            new Promise<void>((_resolve, reject) => {
+              requestOptions?.signal?.addEventListener('abort', () => {
+                reject(new DOMException('Aborted', 'AbortError'));
+              });
+            }),
+        ),
+      },
+    } as unknown as OpenCodeClient;
+
+    const running = runSessionTurn({
+      adapterName: 'slack',
+      client,
+      metadata,
+      prompt: 'Long task',
+      sessionID: 'session-abort',
+      signal: controller.signal,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    controller.abort();
+
+    await expect(running).rejects.toBeInstanceOf(TurnAbortedError);
+    expect(interrupt).toHaveBeenCalledWith({ sessionID: 'session-abort' });
   });
 });

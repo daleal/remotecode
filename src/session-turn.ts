@@ -1,6 +1,14 @@
 import type { OpenCodeClient, SessionMessageInfo } from '@opencode/client';
+import type { StreamChunk } from 'chat';
 
-type RunSessionTurnOptions = {
+export class TurnAbortedError extends Error {
+  constructor() {
+    super('Turn aborted');
+    this.name = 'TurnAbortedError';
+  }
+}
+
+export type RunSessionTurnOptions = {
   adapterName: string;
   client: OpenCodeClient;
   files?: { uri: string; name?: string }[];
@@ -9,8 +17,12 @@ type RunSessionTurnOptions = {
     source: string;
     threadID: string;
   };
+  onChunk?: (chunk: StreamChunk) => void;
+  onStatus?: (status: string) => void;
   prompt: string;
   sessionID: string;
+  shouldContinueWaiting?: () => Promise<boolean> | boolean;
+  signal?: AbortSignal;
 };
 
 export const runSessionTurn = async ({
@@ -18,9 +30,15 @@ export const runSessionTurn = async ({
   client,
   files,
   metadata,
+  onChunk,
+  onStatus,
   prompt,
   sessionID,
+  shouldContinueWaiting,
+  signal,
 }: RunSessionTurnOptions) => {
+  if (signal?.aborted) throw new TurnAbortedError();
+
   const previousAssistantIDs = await assistantMessageIDs(client, sessionID);
   let stopRequestMonitor = () => {};
   const requestMonitorStopped = new Promise<void>((resolve) => {
@@ -33,6 +51,38 @@ export const runSessionTurn = async ({
     requestMonitorStopped,
   );
 
+  const eventAbort = new AbortController();
+  let interrupted = false;
+  const onAbort = () => {
+    eventAbort.abort();
+    if (interrupted) return;
+    interrupted = true;
+    void interruptSession(client, sessionID);
+  };
+  signal?.addEventListener('abort', onAbort, { once: true });
+
+  const streamedAssistantIDs = new Set<string>();
+  let emittedAnyChunk = false;
+  const emitChunk = onChunk
+    ? (chunk: StreamChunk) => {
+        emittedAnyChunk = true;
+        onChunk(chunk);
+      }
+    : undefined;
+  const canStreamEvents = Boolean(emitChunk && typeof client.event?.subscribe === 'function');
+  const eventMonitor =
+    canStreamEvents && emitChunk
+      ? streamSessionEvents({
+          client,
+          onChunk: emitChunk,
+          onStatus,
+          previousAssistantIDs,
+          sessionID,
+          signal: eventAbort.signal,
+          streamedAssistantIDs,
+        })
+      : Promise.resolve();
+
   let newMessages: SessionMessageInfo[];
   try {
     await client.session.prompt({
@@ -41,28 +91,40 @@ export const runSessionTurn = async ({
       text: prompt,
       ...(files?.length ? { files } : {}),
     });
-    await waitForSession(client, sessionID);
 
-    newMessages = await newSessionMessages(client, sessionID, previousAssistantIDs);
     const handledSubagents = new Set<string>();
-    let subagents = backgroundSubagentIDs(newMessages);
-    while (subagents.some((id) => !handledSubagents.has(id))) {
-      const current = subagents.filter((id) => !handledSubagents.has(id));
-      let completed = completedSubagentIDs(newMessages);
-      while (current.some((id) => !completed.has(id))) {
-        await sleep(1000);
-        newMessages = await newSessionMessages(client, sessionID, previousAssistantIDs);
-        completed = completedSubagentIDs(newMessages);
-      }
-      for (const id of current) handledSubagents.add(id);
-      await waitForSession(client, sessionID);
+    do {
+      await waitForSession(client, sessionID, signal);
+      if (signal?.aborted) throw new TurnAbortedError();
+
       newMessages = await newSessionMessages(client, sessionID, previousAssistantIDs);
-      subagents = backgroundSubagentIDs(newMessages);
-    }
+      let subagents = backgroundSubagentIDs(newMessages);
+      while (subagents.some((id) => !handledSubagents.has(id))) {
+        const current = subagents.filter((id) => !handledSubagents.has(id));
+        onStatus?.('Waiting for subagent...');
+        let completed = completedSubagentIDs(newMessages);
+        while (current.some((id) => !completed.has(id))) {
+          if (signal?.aborted) throw new TurnAbortedError();
+          await sleep(1000, signal);
+          if (signal?.aborted) throw new TurnAbortedError();
+          newMessages = await newSessionMessages(client, sessionID, previousAssistantIDs);
+          completed = completedSubagentIDs(newMessages);
+        }
+        for (const id of current) handledSubagents.add(id);
+        await waitForSession(client, sessionID, signal);
+        if (signal?.aborted) throw new TurnAbortedError();
+        newMessages = await newSessionMessages(client, sessionID, previousAssistantIDs);
+        subagents = backgroundSubagentIDs(newMessages);
+      }
+    } while (!signal?.aborted && (await shouldContinueWaiting?.()));
   } finally {
+    signal?.removeEventListener('abort', onAbort);
+    eventAbort.abort();
     stopRequestMonitor();
-    await requestMonitor;
+    await Promise.all([requestMonitor, eventMonitor]);
   }
+
+  if (signal?.aborted) throw new TurnAbortedError();
 
   const result = newMessages.filter((item) => item.type === 'assistant');
   const finalMessage = result.at(-1);
@@ -76,7 +138,180 @@ export const runSessionTurn = async ({
     throw new Error(failure?.error?.message ?? 'OpenCode returned no text');
   }
 
-  return replies.join('\n\n');
+  const finalText = replies.join('\n\n');
+  if (emittedAnyChunk && emitChunk && finalMessage && !streamedAssistantIDs.has(finalMessage.id)) {
+    if (streamedAssistantIDs.size > 0) {
+      emitChunk({ text: '\n\n', type: 'markdown_text' });
+    }
+    emitChunk({ text: finalText, type: 'markdown_text' });
+  }
+
+  return finalText;
+};
+
+const interruptSession = async (client: OpenCodeClient, sessionID: string) => {
+  try {
+    await client.session.interrupt?.({ sessionID });
+  } catch (error) {
+    console.warn(`Could not interrupt OpenCode session ${sessionID}`, error);
+  }
+};
+
+type StreamSessionEventsOptions = {
+  client: OpenCodeClient;
+  onChunk: (chunk: StreamChunk) => void;
+  onStatus?: (status: string) => void;
+  previousAssistantIDs: Set<string>;
+  sessionID: string;
+  signal: AbortSignal;
+  streamedAssistantIDs: Set<string>;
+};
+
+const streamSessionEvents = async ({
+  client,
+  onChunk,
+  onStatus,
+  previousAssistantIDs,
+  sessionID,
+  signal,
+  streamedAssistantIDs,
+}: StreamSessionEventsOptions) => {
+  const toolNames = new Map<string, string>();
+  const streamedTextByPart = new Map<string, string>();
+  let activeTextKey: string | undefined;
+  let emittedAnyText = false;
+  let lastTextEndedWithNewlines = false;
+
+  const emitDelta = (assistantMessageID: string, ordinal: number, delta: string) => {
+    if (!delta) return;
+    const key = `${assistantMessageID}:${ordinal}`;
+    if (activeTextKey !== key) {
+      if (emittedAnyText && !lastTextEndedWithNewlines) {
+        onChunk({ text: '\n\n', type: 'markdown_text' });
+      }
+      activeTextKey = key;
+    }
+    streamedAssistantIDs.add(assistantMessageID);
+    streamedTextByPart.set(key, (streamedTextByPart.get(key) ?? '') + delta);
+    emittedAnyText = true;
+    lastTextEndedWithNewlines = delta.endsWith('\n\n');
+    onChunk({ text: delta, type: 'markdown_text' });
+  };
+
+  while (!signal.aborted) {
+    try {
+      for await (const event of client.event.subscribe({ signal })) {
+        if (signal.aborted) return;
+        if (!('data' in event) || !event.data || !('sessionID' in event.data)) continue;
+        if (event.data.sessionID !== sessionID) continue;
+
+        if (event.type === 'session.text.delta') {
+          if (previousAssistantIDs.has(event.data.assistantMessageID)) continue;
+          emitDelta(event.data.assistantMessageID, event.data.ordinal, event.data.delta);
+        } else if (event.type === 'session.text.ended') {
+          if (previousAssistantIDs.has(event.data.assistantMessageID)) continue;
+          const key = `${event.data.assistantMessageID}:${event.data.ordinal}`;
+          const already = streamedTextByPart.get(key) ?? '';
+          if (event.data.text.startsWith(already) && event.data.text.length > already.length) {
+            emitDelta(
+              event.data.assistantMessageID,
+              event.data.ordinal,
+              event.data.text.slice(already.length),
+            );
+          }
+        } else if (event.type === 'session.reasoning.started') {
+          if (previousAssistantIDs.has(event.data.assistantMessageID)) continue;
+          onStatus?.('Thinking...');
+        } else if (event.type === 'session.tool.input.started') {
+          if (previousAssistantIDs.has(event.data.assistantMessageID)) continue;
+          toolNames.set(event.data.id, event.data.name);
+          onStatus?.(`${formatToolTitle(event.data.name)}...`);
+        } else if (event.type === 'session.tool.called') {
+          if (previousAssistantIDs.has(event.data.assistantMessageID)) continue;
+          const name = toolNames.get(event.data.id) ?? 'tool';
+          onStatus?.(`${describeToolCall(name, event.data.input)}...`);
+        }
+      }
+      return;
+    } catch (error) {
+      if (signal.aborted) return;
+      console.warn(`OpenCode event stream failed for ${sessionID}; reconnecting`, error);
+      await sleep(1000, signal);
+    }
+  }
+};
+
+const truncate = (value: string, maxLength: number) => {
+  const singleLine = value.replace(/\s+/g, ' ').trim();
+  if (singleLine.length <= maxLength) return singleLine;
+  return `${singleLine.slice(0, maxLength - 1)}…`;
+};
+
+const shortPath = (value: string) => {
+  const parts = value.split('/').filter(Boolean);
+  return parts.length <= 2 ? value : parts.slice(-2).join('/');
+};
+
+const TOOL_TITLES: Record<string, string> = {
+  bash: 'Running command',
+  edit: 'Editing file',
+  execute: 'Running script',
+  glob: 'Finding files',
+  grep: 'Searching code',
+  read: 'Reading file',
+  shell: 'Running command',
+  subagent: 'Running subagent',
+  webfetch: 'Fetching page',
+  websearch: 'Searching the web',
+  write: 'Writing file',
+};
+
+const formatToolTitle = (name: string) => TOOL_TITLES[name] ?? `Running ${name}`;
+
+const describeToolCall = (name: string, input: Record<string, unknown>) => {
+  const str = (key: string) => (typeof input[key] === 'string' ? input[key] : undefined);
+  if (name === 'bash' || name === 'shell') {
+    const description = str('description');
+    const command = str('command');
+    return description
+      ? truncate(description, 60)
+      : command
+        ? `Running ${truncate(command, 50)}`
+        : 'Running command';
+  }
+  if (name === 'read') {
+    const path = str('path') ?? str('filePath');
+    return path ? `Reading ${truncate(shortPath(path), 50)}` : 'Reading file';
+  }
+  if (name === 'edit') {
+    const path = str('path') ?? str('filePath');
+    return path ? `Editing ${truncate(shortPath(path), 50)}` : 'Editing file';
+  }
+  if (name === 'write') {
+    const path = str('path') ?? str('filePath');
+    return path ? `Writing ${truncate(shortPath(path), 50)}` : 'Writing file';
+  }
+  if (name === 'grep') {
+    const pattern = str('pattern');
+    return pattern ? `Searching "${truncate(pattern, 45)}"` : 'Searching code';
+  }
+  if (name === 'glob') {
+    const pattern = str('pattern');
+    return pattern ? `Finding ${truncate(pattern, 50)}` : 'Finding files';
+  }
+  if (name === 'subagent') {
+    const description = str('description');
+    return description ? truncate(description, 60) : 'Running subagent';
+  }
+  if (name === 'websearch') {
+    const query = str('query');
+    return query ? `Searching "${truncate(query, 45)}"` : 'Searching the web';
+  }
+  if (name === 'webfetch') {
+    const url = str('url');
+    return url ? `Fetching ${truncate(url, 50)}` : 'Fetching page';
+  }
+  return formatToolTitle(name);
 };
 
 const assistantMessageIDs = async (client: OpenCodeClient, sessionID: string) => {
@@ -150,15 +385,19 @@ const backgroundSubagentIDs = (messages: SessionMessageInfo[]) => {
   return ids;
 };
 
-const waitForSession = async (client: OpenCodeClient, sessionID: string) => {
+const waitForSession = async (client: OpenCodeClient, sessionID: string, signal?: AbortSignal) => {
   for (;;) {
+    if (signal?.aborted) throw new TurnAbortedError();
     try {
-      await client.session.wait({ sessionID });
+      await (signal
+        ? client.session.wait({ sessionID }, { signal })
+        : client.session.wait({ sessionID }));
       return;
     } catch (error) {
+      if (signal?.aborted) throw new TurnAbortedError();
       if (!(error instanceof Error)) throw error;
       console.warn(`OpenCode wait connection failed for ${sessionID}; reconnecting`, error);
-      await sleep(1000);
+      await sleep(1000, signal);
     }
   }
 };
@@ -229,5 +468,19 @@ const rejectPermissionRequests = async (
   }
 };
 
-const sleep = (milliseconds: number) =>
-  new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+const sleep = (milliseconds: number, signal?: AbortSignal) =>
+  new Promise<void>((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, milliseconds);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
