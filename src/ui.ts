@@ -11,7 +11,7 @@ import {
   parseSpecStreamLine,
   type Spec,
 } from '@json-render/core';
-import type { CardElement } from 'chat';
+import type { CardChild, CardElement, StreamChunk } from 'chat';
 
 export type ResponsePart =
   | { type: 'card'; card: CardElement }
@@ -110,12 +110,52 @@ const compileSpecBlock = (lines: string[]): Spec | undefined => {
   return undefined;
 };
 
+const ensureUniqueLinkActionIDs = (card: CardElement): CardElement => {
+  const seen = new Set<string>();
+  let duplicateCounter = 0;
+
+  const uniqueID = (base: string) => {
+    if (!seen.has(base)) {
+      seen.add(base);
+      return undefined;
+    }
+    let candidate: string;
+    do {
+      duplicateCounter += 1;
+      candidate = `${base.slice(0, 240)}-${duplicateCounter}`;
+    } while (seen.has(candidate));
+    seen.add(candidate);
+    return candidate;
+  };
+
+  const visit = (children: CardChild[]): CardChild[] =>
+    children.map((child) => {
+      if (child.type === 'section') {
+        return { ...child, children: visit(child.children) };
+      }
+      if (child.type === 'actions') {
+        return {
+          ...child,
+          children: child.children.map((item) => {
+            if (item.type !== 'link-button') return item;
+            const base = item.id ?? `link-${item.url.slice(0, 200)}`;
+            const id = uniqueID(base);
+            return id ? { ...item, id } : item;
+          }),
+        };
+      }
+      return child;
+    });
+
+  return { ...card, children: visit(card.children) };
+};
+
 const tryBuildCard = (lines: string[], options?: ToCardOptions): CardElement | undefined => {
   const spec = compileSpecBlock(lines);
   if (!spec) return undefined;
 
   try {
-    return toCard(spec, { components: uiComponents, ...options });
+    return ensureUniqueLinkActionIDs(toCard(spec, { components: uiComponents, ...options }));
   } catch (error) {
     if (error instanceof CardSpecError) {
       console.warn('Invalid json-render card spec; falling back to markdown', error.issues);
@@ -233,3 +273,201 @@ export const parseResponseParts = (response: string, options?: ToCardOptions): R
   flushMarkdown();
   return parts;
 };
+
+const couldBeFenceStart = (trimmed: string) =>
+  trimmed === '`' ||
+  trimmed === '``' ||
+  trimmed.startsWith('```') ||
+  trimmed === '~' ||
+  trimmed === '~~' ||
+  trimmed.startsWith('~~~');
+
+export class SpecStreamFilter {
+  private activeFence: string | undefined;
+  private readonly cards: CardElement[] = [];
+  private readonly enabled: boolean;
+  private hasEmittedProse = false;
+  private inSpecFence = false;
+  private leadingWhitespace = '';
+  private lineBuffer = '';
+  private midLine = false;
+  private readonly onSpecStart?: () => void;
+  private readonly options?: ToCardOptions;
+  private rawSpecLines: string[] = [];
+  private specLines: string[] = [];
+  private standaloneLines: string[] = [];
+
+  constructor({
+    enabled,
+    onSpecStart,
+    options,
+  }: {
+    enabled: boolean;
+    onSpecStart?: () => void;
+    options?: ToCardOptions;
+  }) {
+    this.enabled = enabled;
+    this.onSpecStart = onSpecStart;
+    this.options = options;
+  }
+
+  push(delta: string): StreamChunk[] {
+    if (!delta) return [];
+    if (!this.enabled) return [{ text: delta, type: 'markdown_text' }];
+
+    const chunks: StreamChunk[] = [];
+    let cursor = 0;
+    while (cursor < delta.length) {
+      const newlineIndex = delta.indexOf('\n', cursor);
+      if (newlineIndex === -1) {
+        this.pushPartial(delta.slice(cursor), chunks);
+        break;
+      }
+      const piece = delta.slice(cursor, newlineIndex);
+      if (this.midLine) {
+        this.emitText(`${piece}\n`, chunks);
+        this.midLine = false;
+      } else {
+        const line = this.lineBuffer + piece;
+        this.lineBuffer = '';
+        this.processLine(line, true, chunks);
+      }
+      cursor = newlineIndex + 1;
+    }
+    return chunks;
+  }
+
+  finish(): { cards: CardElement[]; chunks: StreamChunk[] } {
+    if (!this.enabled) return { cards: [], chunks: [] };
+
+    const chunks: StreamChunk[] = [];
+    if (this.lineBuffer) {
+      const line = this.lineBuffer;
+      this.lineBuffer = '';
+      this.processLine(line, false, chunks);
+    }
+    if (this.inSpecFence) {
+      this.finalizeSpecFence(chunks, false);
+    }
+    if (this.standaloneLines.length > 0) {
+      const raw = this.standaloneLines.join('\n');
+      this.standaloneLines = [];
+      const card = tryStandaloneSpecCard(raw, this.options);
+      if (card) {
+        this.cards.push(card);
+      } else {
+        this.emitText(raw, chunks);
+      }
+    }
+    return { cards: [...this.cards], chunks };
+  }
+
+  private pushPartial(piece: string, chunks: StreamChunk[]) {
+    if (!piece) return;
+    if (this.midLine) {
+      this.emitText(piece, chunks);
+      return;
+    }
+    this.lineBuffer += piece;
+    if (this.inSpecFence || this.standaloneLines.length > 0) return;
+    if (this.couldBeFenceOrStandalone(this.lineBuffer)) return;
+
+    const text = this.lineBuffer;
+    this.lineBuffer = '';
+    this.midLine = true;
+    this.emitText(text, chunks);
+  }
+
+  private couldBeFenceOrStandalone(text: string) {
+    const trimmed = text.trimStart();
+    if (!trimmed) return true;
+    if (this.activeFence) {
+      const char = this.activeFence[0];
+      return Boolean(char && trimmed.startsWith(char));
+    }
+    if (couldBeFenceStart(trimmed)) return true;
+    if (!this.hasEmittedProse && trimmed.startsWith('{')) return true;
+    return false;
+  }
+
+  private processLine(line: string, hasNewline: boolean, chunks: StreamChunk[]) {
+    const suffix = hasNewline ? '\n' : '';
+    if (this.inSpecFence && this.activeFence) {
+      this.rawSpecLines.push(line);
+      if (isFenceToggle(line, this.activeFence)) {
+        this.finalizeSpecFence(chunks, hasNewline);
+      } else {
+        this.specLines.push(line);
+      }
+      return;
+    }
+
+    if (this.activeFence) {
+      this.emitText(`${line}${suffix}`, chunks);
+      if (isFenceToggle(line, this.activeFence)) this.activeFence = undefined;
+      return;
+    }
+
+    if (this.standaloneLines.length > 0 || (!this.hasEmittedProse && line.trim().startsWith('{'))) {
+      const trimmed = line.trim();
+      if (!trimmed && this.standaloneLines.length > 0) {
+        this.standaloneLines.push(line);
+        return;
+      }
+      if (trimmed && parseSpecStreamLine(trimmed)) {
+        this.standaloneLines.push(line);
+        return;
+      }
+      if (this.standaloneLines.length > 0) {
+        this.emitText(`${this.standaloneLines.join('\n')}\n`, chunks);
+        this.standaloneLines = [];
+      }
+    }
+
+    const fence = fenceMarker(line);
+    if (fence) {
+      if (isSpecInfo(fence.info)) {
+        this.inSpecFence = true;
+        this.activeFence = fence.marker;
+        this.specLines = [];
+        this.rawSpecLines = [line];
+        this.onSpecStart?.();
+      } else {
+        this.activeFence = fence.marker;
+        this.emitText(`${line}${suffix}`, chunks);
+      }
+      return;
+    }
+
+    this.emitText(`${line}${suffix}`, chunks);
+  }
+
+  private finalizeSpecFence(chunks: StreamChunk[], trailingNewline: boolean) {
+    const card = tryBuildCard(this.specLines, this.options);
+    if (card) {
+      this.cards.push(card);
+    } else {
+      this.emitText(`${this.rawSpecLines.join('\n')}${trailingNewline ? '\n' : ''}`, chunks);
+    }
+    this.inSpecFence = false;
+    this.activeFence = undefined;
+    this.specLines = [];
+    this.rawSpecLines = [];
+  }
+
+  private emitText(text: string, chunks: StreamChunk[]) {
+    if (!text) return;
+    if (!this.hasEmittedProse) {
+      if (!text.trim()) {
+        this.leadingWhitespace += text;
+        return;
+      }
+      this.hasEmittedProse = true;
+      const combined = this.leadingWhitespace ? `${this.leadingWhitespace}${text}` : text;
+      this.leadingWhitespace = '';
+      chunks.push({ text: combined, type: 'markdown_text' });
+      return;
+    }
+    chunks.push({ text, type: 'markdown_text' });
+  }
+}

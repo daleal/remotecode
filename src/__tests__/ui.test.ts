@@ -1,6 +1,12 @@
 import { cardToBlockKit } from '@chat-adapter/slack';
 import { describe, expect, it, vi } from 'vitest';
-import { adapterPrefix, parseResponseParts, supportsUI, uiInstructions } from '../ui';
+import {
+  adapterPrefix,
+  parseResponseParts,
+  SpecStreamFilter,
+  supportsUI,
+  uiInstructions,
+} from '../ui';
 
 const VALID_SPEC_JSONL = [
   '{"op":"add","path":"/root","value":"card"}',
@@ -143,5 +149,102 @@ describe('parseResponseParts', () => {
       expect.arrayContaining([expect.stringContaining('expected 2')]),
     );
     warn.mockRestore();
+  });
+
+  it('assigns unique Slack action_ids when multiple LinkButtons share the same URL', () => {
+    const duplicateLinks = [
+      '```spec',
+      '{"op":"add","path":"/root","value":"card"}',
+      '{"op":"add","path":"/elements/card","value":{"type":"Card","props":{"title":"Links"},"children":["actions"]}}',
+      '{"op":"add","path":"/elements/actions","value":{"type":"Actions","props":{},"children":["l1","l2"]}}',
+      '{"op":"add","path":"/elements/l1","value":{"type":"LinkButton","props":{"label":"First","url":"https://fintoc.com"},"children":[]}}',
+      '{"op":"add","path":"/elements/l2","value":{"type":"LinkButton","props":{"label":"Second","url":"https://fintoc.com"},"children":[]}}',
+      '```',
+    ].join('\n');
+
+    const parts = parseResponseParts(duplicateLinks);
+    expect(parts).toHaveLength(1);
+    expect(parts[0]?.type).toBe('card');
+    if (parts[0]?.type === 'card') {
+      const blocks = cardToBlockKit(parts[0].card);
+      const actionsBlock = blocks.find((block) => block.type === 'actions') as
+        | { elements: Array<{ action_id: string }> }
+        | undefined;
+      const actionIDs = actionsBlock?.elements.map((element) => element.action_id);
+      expect(actionIDs).toEqual(['link-https://fintoc.com', 'link-https://fintoc.com-1']);
+    }
+  });
+});
+
+describe('SpecStreamFilter', () => {
+  it('streams prose immediately, hides ```spec fences without task updates, and extracts cards', () => {
+    const onSpecStart = vi.fn();
+    const filter = new SpecStreamFilter({ enabled: true, onSpecStart });
+    const text = `Here is the overview:\n\n\`\`\`spec\n${VALID_SPEC_JSONL}\n\`\`\`\n\nAll good.`;
+    const streamed = [];
+    for (let index = 0; index < text.length; index += 7) {
+      streamed.push(...filter.push(text.slice(index, index + 7)));
+    }
+    const done = filter.finish();
+    const allChunks = [...streamed, ...done.chunks];
+    const markdown = allChunks
+      .filter((chunk) => chunk.type === 'markdown_text')
+      .map((chunk) => chunk.text)
+      .join('');
+    const tasks = allChunks.filter((chunk) => chunk.type === 'task_update');
+
+    expect(markdown).toBe('Here is the overview:\n\n\nAll good.');
+    expect(markdown).not.toContain('"op":"add"');
+    expect(tasks).toEqual([]);
+    expect(onSpecStart).toHaveBeenCalledTimes(1);
+    expect(done.cards).toHaveLength(1);
+    expect(done.cards[0]?.title).toBe('Deploy Status');
+  });
+
+  it('extracts standalone unfenced JSONL specs without emitting markdown', () => {
+    const filter = new SpecStreamFilter({ enabled: true });
+    const chunks = filter.push(VALID_SPEC_JSONL);
+    const done = filter.finish();
+
+    expect(chunks).toEqual([]);
+    expect(done.chunks).toEqual([]);
+    expect(done.cards).toHaveLength(1);
+    expect(done.cards[0]?.title).toBe('Deploy Status');
+  });
+
+  it('falls back to markdown when a streamed ```spec block is invalid', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const filter = new SpecStreamFilter({ enabled: true });
+    const invalid = [
+      '```spec',
+      '{"op":"add","path":"/root","value":"card"}',
+      '{"op":"add","path":"/elements/card","value":{"type":"Card","props":{"title":"Bad"},"children":["t"]}}',
+      '{"op":"add","path":"/elements/t","value":{"type":"Table","props":{"headers":["A","B"],"rows":[["only-one"]]},"children":[]}}',
+      '```',
+    ].join('\n');
+    const chunks = [...filter.push(invalid), ...filter.finish().chunks];
+    const markdown = chunks
+      .filter((chunk) => chunk.type === 'markdown_text')
+      .map((chunk) => chunk.text)
+      .join('');
+
+    expect(markdown).toBe(invalid);
+    expect(chunks.filter((chunk) => chunk.type === 'task_update')).toEqual([]);
+    warn.mockRestore();
+  });
+
+  it('passes through non-spec code blocks and skips parsing when disabled', () => {
+    const enabled = new SpecStreamFilter({ enabled: true });
+    const snippet = '```ts\nconst x = 1;\n```';
+    const enabledText = [...enabled.push(snippet), ...enabled.finish().chunks]
+      .filter((chunk) => chunk.type === 'markdown_text')
+      .map((chunk) => chunk.text)
+      .join('');
+    expect(enabledText).toBe(snippet);
+
+    const disabled = new SpecStreamFilter({ enabled: false });
+    const rawSpec = `\`\`\`spec\n${VALID_SPEC_JSONL}\n\`\`\``;
+    expect(disabled.push(rawSpec)).toEqual([{ text: rawSpec, type: 'markdown_text' }]);
+    expect(disabled.finish()).toEqual({ cards: [], chunks: [] });
   });
 });
