@@ -20,6 +20,7 @@ export type RunSessionTurnOptions = {
     threadID: string;
   };
   onChunk?: (chunk: StreamChunk) => void;
+  onMessageEnd?: () => void;
   onStatus?: (status: string) => void;
   prompt: string;
   sessionID: string;
@@ -33,6 +34,7 @@ export const runSessionTurn = async ({
   files,
   metadata,
   onChunk,
+  onMessageEnd,
   onStatus,
   prompt,
   sessionID,
@@ -72,11 +74,14 @@ export const runSessionTurn = async ({
       }
     : undefined;
   const canStreamEvents = Boolean(emitChunk && typeof client.event?.subscribe === 'function');
+  const streamController = { flush: () => {} };
   const eventMonitor =
     canStreamEvents && emitChunk
       ? streamSessionEvents({
           client,
+          controller: streamController,
           onChunk: emitChunk,
+          onMessageEnd,
           onStatus,
           previousAssistantIDs,
           sessionID,
@@ -103,6 +108,7 @@ export const runSessionTurn = async ({
       let subagents = backgroundSubagentIDs(newMessages);
       while (subagents.some((id) => !handledSubagents.has(id))) {
         const current = subagents.filter((id) => !handledSubagents.has(id));
+        streamController.flush();
         onStatus?.('Waiting for subagent...');
         let completed = completedSubagentIDs(newMessages);
         while (current.some((id) => !completed.has(id))) {
@@ -142,7 +148,9 @@ export const runSessionTurn = async ({
 
   const finalText = replies.join('\n\n');
   if (emittedAnyChunk && emitChunk && finalMessage && !streamedAssistantIDs.has(finalMessage.id)) {
-    if (streamedAssistantIDs.size > 0) {
+    if (onMessageEnd) {
+      streamController.flush();
+    } else if (streamedAssistantIDs.size > 0) {
       emitChunk({ text: '\n\n', type: 'markdown_text' });
     }
     emitChunk({ text: finalText, type: 'markdown_text' });
@@ -161,7 +169,9 @@ const interruptSession = async (client: OpenCodeClient, sessionID: string) => {
 
 type StreamSessionEventsOptions = {
   client: OpenCodeClient;
+  controller: { flush: () => void };
   onChunk: (chunk: StreamChunk) => void;
+  onMessageEnd?: () => void;
   onStatus?: (status: string) => void;
   previousAssistantIDs: Set<string>;
   sessionID: string;
@@ -171,7 +181,9 @@ type StreamSessionEventsOptions = {
 
 const streamSessionEvents = async ({
   client,
+  controller,
   onChunk,
+  onMessageEnd,
   onStatus,
   previousAssistantIDs,
   sessionID,
@@ -180,12 +192,26 @@ const streamSessionEvents = async ({
 }: StreamSessionEventsOptions) => {
   const toolNames = new Map<string, string>();
   const streamedTextByPart = new Map<string, string>();
+  let activeAssistantID: string | undefined;
   let activeTextKey: string | undefined;
   let emittedAnyText = false;
   let lastTextEndedWithNewlines = false;
 
+  const finishCurrentMessage = () => {
+    if (!onMessageEnd || !activeAssistantID) return;
+    activeAssistantID = undefined;
+    activeTextKey = undefined;
+    emittedAnyText = false;
+    lastTextEndedWithNewlines = false;
+    onMessageEnd();
+  };
+  controller.flush = finishCurrentMessage;
+
   const emitDelta = (assistantMessageID: string, ordinal: number, delta: string) => {
     if (!delta) return;
+    if (onMessageEnd && activeAssistantID && activeAssistantID !== assistantMessageID) {
+      finishCurrentMessage();
+    }
     const key = `${assistantMessageID}:${ordinal}`;
     if (activeTextKey !== key) {
       if (emittedAnyText && !lastTextEndedWithNewlines) {
@@ -193,6 +219,7 @@ const streamSessionEvents = async ({
       }
       activeTextKey = key;
     }
+    activeAssistantID = assistantMessageID;
     streamedAssistantIDs.add(assistantMessageID);
     streamedTextByPart.set(key, (streamedTextByPart.get(key) ?? '') + delta);
     emittedAnyText = true;
@@ -221,15 +248,30 @@ const streamSessionEvents = async ({
               event.data.text.slice(already.length),
             );
           }
+        } else if (event.type === 'session.step.started') {
+          if (previousAssistantIDs.has(event.data.assistantMessageID)) continue;
+          if (activeAssistantID && activeAssistantID !== event.data.assistantMessageID) {
+            finishCurrentMessage();
+            onStatus?.('Thinking...');
+          }
+        } else if (event.type === 'session.step.ended') {
+          if (previousAssistantIDs.has(event.data.assistantMessageID)) continue;
+          if (event.data.finish === 'tool-calls') {
+            finishCurrentMessage();
+          }
         } else if (event.type === 'session.reasoning.started') {
           if (previousAssistantIDs.has(event.data.assistantMessageID)) continue;
+          if (activeAssistantID === event.data.assistantMessageID) continue;
+          finishCurrentMessage();
           onStatus?.('Thinking...');
         } else if (event.type === 'session.tool.input.started') {
           if (previousAssistantIDs.has(event.data.assistantMessageID)) continue;
+          finishCurrentMessage();
           toolNames.set(event.data.id, event.data.name);
           onStatus?.(`${formatToolTitle(event.data.name)}...`);
         } else if (event.type === 'session.tool.called') {
           if (previousAssistantIDs.has(event.data.assistantMessageID)) continue;
+          finishCurrentMessage();
           const name = toolNames.get(event.data.id) ?? 'tool';
           onStatus?.(`${describeToolCall(name, event.data.input)}...`);
         }

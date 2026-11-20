@@ -500,4 +500,142 @@ describe('runSessionTurn', () => {
     await expect(running).rejects.toBeInstanceOf(TurnAbortedError);
     expect(interrupt).toHaveBeenCalledWith({ sessionID: 'session-abort' });
   });
+
+  it('splits messages via onMessageEnd across tools and steps while ignoring same-step trailing reasoning', async () => {
+    const messagesEmitted: string[][] = [[]];
+    const statuses: string[] = [];
+    let releaseWait = () => {};
+    const waitPromise = new Promise<void>((resolve) => {
+      releaseWait = resolve;
+    });
+    const events: unknown[] = [
+      {
+        data: {
+          assistantMessageID: 'assistant-1',
+          delta: 'Anotado, ya lo cambio.',
+          ordinal: 0,
+          sessionID: 'session-1',
+        },
+        type: 'session.text.delta',
+      },
+      {
+        data: {
+          assistantMessageID: 'assistant-1',
+          ordinal: 0,
+          sessionID: 'session-1',
+          text: 'Anotado, ya lo cambio.',
+        },
+        type: 'session.text.ended',
+      },
+      {
+        data: {
+          assistantMessageID: 'assistant-1',
+          ordinal: 1,
+          sessionID: 'session-1',
+        },
+        type: 'session.reasoning.started',
+      },
+      {
+        data: {
+          assistantMessageID: 'assistant-2',
+          sessionID: 'session-1',
+        },
+        type: 'session.step.started',
+      },
+      {
+        data: {
+          assistantMessageID: 'assistant-2',
+          id: 'tool-1',
+          name: 'shell',
+          sessionID: 'session-1',
+        },
+        type: 'session.tool.input.started',
+      },
+      {
+        data: {
+          assistantMessageID: 'assistant-2',
+          executed: true,
+          id: 'tool-1',
+          input: { command: 'git push' },
+          sessionID: 'session-1',
+        },
+        type: 'session.tool.called',
+      },
+      {
+        data: {
+          assistantMessageID: 'assistant-3',
+          delta: 'Quedó listo.',
+          ordinal: 0,
+          sessionID: 'session-1',
+        },
+        type: 'session.text.delta',
+      },
+      {
+        data: {
+          assistantMessageID: 'assistant-3',
+          ordinal: 1,
+          sessionID: 'session-1',
+        },
+        type: 'session.reasoning.started',
+      },
+    ];
+
+    let prompted = false;
+    const client = {
+      event: {
+        subscribe: vi.fn(async function* () {
+          for (const event of events) yield event;
+          releaseWait();
+        }),
+      },
+      message: {
+        list: vi.fn(async () => ({
+          cursor: {},
+          data: prompted
+            ? [
+                {
+                  content: [{ text: 'Quedó listo.', type: 'text' }],
+                  id: 'assistant-3',
+                  type: 'assistant',
+                },
+                {
+                  content: [{ text: 'Anotado, ya lo cambio.', type: 'text' }],
+                  id: 'assistant-1',
+                  type: 'assistant',
+                },
+              ]
+            : [],
+        })),
+      },
+      permission: { list: vi.fn(async () => []), reply: vi.fn() },
+      session: {
+        list: vi.fn(async () => ({ cursor: {}, data: [] })),
+        prompt: vi.fn(async () => {
+          prompted = true;
+        }),
+        wait: vi.fn(() => waitPromise),
+      },
+    } as unknown as OpenCodeClient;
+
+    const result = await runSessionTurn({
+      adapterName: 'slack',
+      client,
+      metadata,
+      onChunk: (chunk) => {
+        if (chunk.type === 'markdown_text') {
+          messagesEmitted.at(-1)?.push(chunk.text);
+        }
+      },
+      onMessageEnd: () => {
+        messagesEmitted.push([]);
+      },
+      onStatus: (status) => statuses.push(status),
+      prompt: 'Update PR',
+      sessionID: 'session-1',
+    });
+
+    expect(result).toBe('Quedó listo.');
+    expect(messagesEmitted).toEqual([['Anotado, ya lo cambio.'], ['Quedó listo.']]);
+    expect(statuses).toEqual(['Thinking...', 'Running command...', 'Running git push...']);
+  });
 });
