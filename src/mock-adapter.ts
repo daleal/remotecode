@@ -42,6 +42,7 @@ export class MockAdapter implements Adapter<MockThreadID, MockRawMessage> {
   readonly reactions: Array<{ emoji: string; messageId: string }> = [];
   readonly removedReactions: Array<{ emoji: string; messageId: string }> = [];
   readonly streamChunks: Array<string | StreamChunk> = [];
+  readonly streamSessionStatuses: Array<string | undefined> = [];
   readonly typingStatuses: string[] = [];
   endTypingCount = 0;
 
@@ -172,6 +173,7 @@ export class MockAdapter implements Adapter<MockThreadID, MockRawMessage> {
     textStream: AsyncIterable<string | StreamChunk>,
     options?: StreamOptions,
   ): Promise<RawMessage<MockRawMessage>> {
+    this.streamSessionStatuses.push(options?.sessionStatus);
     let accumulated = '';
     for await (const chunk of textStream) {
       if (options?.signal?.aborted) break;

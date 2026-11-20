@@ -38,8 +38,9 @@ type ProcessMentionOptions = {
   getLastMessageID?: () => string | undefined;
   initialStatus?: string;
   onChunk?: (chunk: StreamChunk) => void;
+  onMessageEnd?: () => void;
   onSessionReady?: (sessionID: string, lastMessageID: string) => void;
-  onStatus?: (status: string) => void;
+  onStatus?: (status: string, options?: { force?: boolean }) => Promise<void> | void;
   provisionRepos?: typeof provisionWorkspaceRepos;
   selectRepos?: typeof selectRepositories;
   shouldContinueWaiting?: () => Promise<boolean> | boolean;
@@ -63,6 +64,7 @@ type ActiveTurn = {
   lastMessageID?: string;
   onStatus?: (status: string) => void;
   onSteer?: (message: Message) => void;
+  onSteerStart?: () => void;
   rejectSession: (error: unknown) => void;
   resolveFinished: () => void;
   resolveSession: (sessionID: string) => void;
@@ -188,48 +190,23 @@ export const createAgent = (options: CreateAgentOptions) => {
     await thread.subscribe();
 
     const existingState = await thread.state;
+    const messenger = createTurnMessenger({
+      thread,
+      uiAdapters: options.uiAdapters,
+    });
     const initialStatus = existingState?.sessionID ? 'Thinking...' : undefined;
     if (initialStatus) {
-      await setTypingStatus(thread, initialStatus);
+      await messenger.setStatus(initialStatus);
     }
 
-    const chunkQueue = new AsyncChunkQueue();
-    let streamPromise: Promise<unknown> | undefined;
-    let streamError: unknown;
-
-    const specFilter = new SpecStreamFilter({
-      enabled: supportsUI(thread.adapter.name, options.uiAdapters),
-      onSpecStart: () => {
-        if (!streamPromise) void setTypingStatus(thread, 'Rendering card...');
-      },
-    });
-
-    const pushToStream = (chunk: StreamChunk) => {
-      if (!streamPromise) {
-        streamPromise = Promise.resolve(thread.post(new StreamingPlan(chunkQueue))).catch(
-          (error) => {
-            streamError = error;
-          },
-        );
-      }
-      chunkQueue.push(chunk);
-    };
-
-    const emitChunk = (chunk: StreamChunk) => {
-      if (chunk.type === 'markdown_text') {
-        for (const filtered of specFilter.push(chunk.text)) {
-          pushToStream(filtered);
-        }
-        return;
-      }
-      pushToStream(chunk);
-    };
-
     turn.onStatus = (status) => {
-      if (!streamPromise) void setTypingStatus(thread, status);
+      void messenger.setStatus(status);
+    };
+    turn.onSteerStart = () => {
+      void messenger.setStatus('Updating approach...', { force: true });
     };
     turn.onSteer = () => {
-      turn.onStatus?.('Updating approach...');
+      void messenger.setStatus('Updating approach...');
     };
 
     let outcomeEmoji: 'octagonal_sign' | 'x' | undefined;
@@ -270,7 +247,8 @@ export const createAgent = (options: CreateAgentOptions) => {
         config: options.config,
         getLastMessageID: () => turn.lastMessageID,
         initialStatus,
-        onChunk: emitChunk,
+        onChunk: messenger.emitChunk,
+        onMessageEnd: messenger.endMessage,
         onSessionReady: (sessionID, lastMessageID) => {
           turn.lastMessageID = lastMessageID;
           if (!turn.sessionSettled) {
@@ -278,9 +256,7 @@ export const createAgent = (options: CreateAgentOptions) => {
             turn.resolveSession(sessionID);
           }
         },
-        onStatus: (status) => {
-          if (!streamPromise) void setTypingStatus(thread, status);
-        },
+        onStatus: (status, statusOptions) => messenger.setStatus(status, statusOptions),
         provisionRepos,
         selectRepos,
         shouldContinueWaiting,
@@ -292,27 +268,10 @@ export const createAgent = (options: CreateAgentOptions) => {
         workspace,
       });
 
-      const { cards, chunks } = specFilter.finish();
-      for (const chunk of chunks) pushToStream(chunk);
-      chunkQueue.close();
-
-      if (streamPromise) {
-        await streamPromise;
-        if (streamError) throw streamError;
-        for (const card of cards) {
-          await thread.post(card);
-        }
-      } else if (cards.length > 0) {
-        for (const card of cards) {
-          await thread.post(card);
-        }
-      } else {
-        await postResponse(thread, response, options.uiAdapters);
-      }
+      await messenger.finish(response);
       posted = true;
     } catch (error) {
-      chunkQueue.close();
-      if (streamPromise) await streamPromise;
+      await messenger.abort();
       if (!turn.sessionSettled) {
         turn.sessionSettled = true;
         turn.rejectSession(error);
@@ -330,7 +289,7 @@ export const createAgent = (options: CreateAgentOptions) => {
         activeTurns.delete(thread.id);
       }
       turn.resolveFinished();
-      if (!posted) await endTypingStatus(thread);
+      await messenger.cleanup(!posted);
     }
 
     if (outcomeEmoji) {
@@ -462,6 +421,7 @@ const steerActiveTurn = ({
       return false;
     }
     if (turn.closing) return false;
+    turn.onSteerStart?.();
 
     try {
       const { messages, priorMessages } = await collectThreadMessages(thread, turn.lastMessageID);
@@ -574,8 +534,208 @@ const postResponse = async (
   }
 };
 
+const STATUS_KEEPALIVE_MS = 90_000;
+
+type MessageStream = {
+  chunkQueue: AsyncChunkQueue;
+  specFilter: SpecStreamFilter;
+  started: boolean;
+};
+
+const createTurnMessenger = ({
+  thread,
+  uiAdapters,
+}: {
+  thread: Thread<ThreadState>;
+  uiAdapters?: readonly string[];
+}) => {
+  const uiEnabled = supportsUI(thread.adapter.name, uiAdapters);
+  let currentMessage: MessageStream | undefined;
+  let desiredStatus: string | undefined;
+  let hasActiveTypingStatus = false;
+  let keepaliveTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastSentStatus: string | undefined;
+  let pendingPosts = 0;
+  let postChain: Promise<void> = Promise.resolve();
+  let postedAnyMessage = false;
+  let statusChain: Promise<void> = Promise.resolve();
+  let statusDirty = false;
+  let streamError: unknown;
+  let turnEnded = false;
+
+  const canShowStatus = () => !turnEnded && pendingPosts === 0 && !currentMessage?.started;
+
+  const stopKeepalive = () => {
+    if (!keepaliveTimer) return;
+    clearTimeout(keepaliveTimer);
+    keepaliveTimer = undefined;
+  };
+
+  const scheduleKeepalive = () => {
+    stopKeepalive();
+    if (!canShowStatus() || !desiredStatus) return;
+    keepaliveTimer = setTimeout(() => {
+      keepaliveTimer = undefined;
+      if (!canShowStatus() || !desiredStatus) return;
+      void setStatus(desiredStatus, { force: true });
+    }, STATUS_KEEPALIVE_MS);
+  };
+
+  const setStatus = (
+    status: string,
+    { force = false }: { force?: boolean } = {},
+  ): Promise<void> => {
+    desiredStatus = status;
+    if (!canShowStatus()) {
+      statusDirty = true;
+      return Promise.resolve();
+    }
+    if (!force && !statusDirty && lastSentStatus === status) {
+      scheduleKeepalive();
+      return Promise.resolve();
+    }
+    statusDirty = false;
+    lastSentStatus = status;
+    scheduleKeepalive();
+    const call = statusChain.then(async () => {
+      if (turnEnded) return;
+      hasActiveTypingStatus = true;
+      await setTypingStatus(thread, status);
+    });
+    statusChain = call;
+    return call;
+  };
+
+  const flushPendingStatus = () => {
+    if (!canShowStatus() || !desiredStatus || !statusDirty) return;
+    void setStatus(desiredStatus, { force: true });
+  };
+
+  const enqueuePost = (task: () => Promise<void>) => {
+    pendingPosts += 1;
+    postChain = postChain
+      .then(task)
+      .catch((error) => {
+        if (streamError === undefined) streamError = error;
+      })
+      .finally(() => {
+        pendingPosts -= 1;
+        flushPendingStatus();
+      });
+  };
+
+  const ensureCurrentMessage = (): MessageStream => {
+    if (currentMessage) return currentMessage;
+    const message: MessageStream = {
+      chunkQueue: new AsyncChunkQueue(),
+      specFilter: new SpecStreamFilter({
+        enabled: uiEnabled,
+        onSpecStart: () => {
+          void setStatus('Rendering card...');
+        },
+      }),
+      started: false,
+    };
+    currentMessage = message;
+    return message;
+  };
+
+  const pushToStream = (message: MessageStream, chunk: StreamChunk) => {
+    if (!message.started) {
+      message.started = true;
+      postedAnyMessage = true;
+      statusDirty = true;
+      stopKeepalive();
+      enqueuePost(async () => {
+        await thread.post(new StreamingPlan(message.chunkQueue));
+        hasActiveTypingStatus = false;
+      });
+    }
+    message.chunkQueue.push(chunk);
+  };
+
+  const emitChunk = (chunk: StreamChunk) => {
+    const message = ensureCurrentMessage();
+    if (chunk.type === 'markdown_text') {
+      for (const filtered of message.specFilter.push(chunk.text)) {
+        pushToStream(message, filtered);
+      }
+      return;
+    }
+    pushToStream(message, chunk);
+  };
+
+  const closeCurrentMessage = () => {
+    const message = currentMessage;
+    if (!message) return;
+    currentMessage = undefined;
+
+    const { cards, chunks } = message.specFilter.finish();
+    for (const chunk of chunks) {
+      pushToStream(message, chunk);
+    }
+    if (message.started) {
+      message.chunkQueue.close();
+    }
+    if (cards.length > 0) {
+      postedAnyMessage = true;
+      statusDirty = true;
+      stopKeepalive();
+      enqueuePost(async () => {
+        for (const card of cards) {
+          await thread.post(card);
+        }
+        hasActiveTypingStatus = false;
+      });
+    }
+  };
+
+  const finish = async (response: string) => {
+    turnEnded = true;
+    stopKeepalive();
+    closeCurrentMessage();
+    await postChain;
+    if (streamError !== undefined) throw streamError;
+    if (!postedAnyMessage) {
+      await postResponse(thread, response, uiAdapters);
+      postedAnyMessage = true;
+      hasActiveTypingStatus = false;
+    }
+  };
+
+  const abort = async () => {
+    turnEnded = true;
+    stopKeepalive();
+    const message = currentMessage;
+    currentMessage = undefined;
+    if (message?.started) {
+      message.chunkQueue.close();
+    }
+    await postChain;
+  };
+
+  const cleanup = async (forceEndTyping: boolean) => {
+    turnEnded = true;
+    stopKeepalive();
+    await statusChain;
+    if (forceEndTyping || hasActiveTypingStatus) {
+      await endTypingStatus(thread);
+    }
+  };
+
+  return {
+    abort,
+    cleanup,
+    emitChunk,
+    endMessage: closeCurrentMessage,
+    finish,
+    setStatus,
+  };
+};
+
 type SlackAssistantAdapter = Adapter & {
   endTyping?: (threadId: string, status?: 'active') => Promise<void>;
+  setAssistantStatus?: (channelId: string, threadTs: string, status: string) => Promise<void>;
   setAssistantTitle?: (channelId: string, threadTs: string, title: string) => Promise<void>;
   webClient?: {
     assistant?: {
@@ -626,6 +786,17 @@ const setTypingStatus = async (thread: Thread<ThreadState>, status: string) => {
 
 const endTypingStatus = async (thread: Thread<ThreadState>) => {
   const adapter = thread.adapter as SlackAssistantAdapter;
+  if (typeof adapter.setAssistantStatus === 'function') {
+    const parts = decodedThreadParts(thread);
+    if (!parts) return;
+    try {
+      await adapter.setAssistantStatus(parts.channel, parts.threadTs, '');
+    } catch (error) {
+      console.error('Could not clear typing status', error);
+    }
+    return;
+  }
+
   const setStatus = adapter.webClient?.assistant?.threads?.setStatus;
   if (typeof setStatus === 'function') {
     const parts = decodedThreadParts(thread);
@@ -683,6 +854,7 @@ export const processMention = async ({
   getLastMessageID,
   initialStatus,
   onChunk,
+  onMessageEnd,
   onSessionReady,
   onStatus,
   provisionRepos = provisionWorkspaceRepos,
@@ -696,10 +868,13 @@ export const processMention = async ({
   workspace,
 }: ProcessMentionOptions) => {
   let currentStatus = initialStatus;
+  let forceNextStatus = false;
   const updateStatus = async (status: string) => {
-    if (currentStatus === status) return;
+    if (!forceNextStatus && currentStatus === status) return;
+    const force = forceNextStatus;
+    forceNextStatus = false;
     currentStatus = status;
-    await setTypingStatus(thread, status);
+    await (onStatus ? onStatus(status, { force }) : setTypingStatus(thread, status));
   };
 
   const state = await thread.state;
@@ -730,6 +905,7 @@ export const processMention = async ({
     });
     // Posting an ephemeral message clears Slack's assistant status indicator.
     currentStatus = undefined;
+    forceNextStatus = true;
   }
   await updateStatus('Thinking...');
 
@@ -787,7 +963,8 @@ export const processMention = async ({
       threadID: thread.id,
     },
     onChunk,
-    onStatus,
+    onMessageEnd,
+    onStatus: onStatus ? (status) => void onStatus(status) : undefined,
     prompt,
     sessionID: session.sessionID,
     shouldContinueWaiting,

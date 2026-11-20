@@ -10,6 +10,7 @@ vi.mock('../should-respond', () => ({ shouldRespond: vi.fn() }));
 const bots: Array<ReturnType<typeof createAgent>> = [];
 
 afterEach(async () => {
+  vi.useRealTimers();
   await Promise.all(bots.splice(0).map((bot) => bot.shutdown()));
   vi.restoreAllMocks();
 });
@@ -1034,5 +1035,180 @@ describe('Slack agent', () => {
       availableRepos: ['api', 'dashboard'],
       provisionedRepos: ['api', 'dashboard'],
     });
+  });
+
+  it('posts intermediate text as separate messages, keeps typing status alive across steers, and refreshes on long tools', async () => {
+    vi.useFakeTimers();
+    const pendingEvents: unknown[] = [];
+    let notifyEvent: (() => void) | undefined;
+    let eventsDone = false;
+    const pushEvent = (event: unknown) => {
+      pendingEvents.push(event);
+      notifyEvent?.();
+      notifyEvent = undefined;
+    };
+    let waitCount = 0;
+    let releaseWait = () => {};
+    let promptCount = 0;
+    let firstPromptSent = () => {};
+    const firstPromptReady = new Promise<void>((resolve) => {
+      firstPromptSent = resolve;
+    });
+
+    const client = {
+      event: {
+        subscribe: vi.fn(async function* () {
+          while (!eventsDone || pendingEvents.length > 0) {
+            if (pendingEvents.length === 0) {
+              await new Promise<void>((resolve) => {
+                notifyEvent = resolve;
+              });
+              continue;
+            }
+            yield pendingEvents.shift();
+          }
+        }),
+      },
+      generate: { text: vi.fn(async () => ({ text: 'Multi-message' })) },
+      message: {
+        list: vi.fn(async () => ({
+          cursor: {},
+          data:
+            promptCount > 0
+              ? [
+                  {
+                    content: [{ text: 'Subido y monitoreando.', type: 'text' }],
+                    id: 'assistant-3',
+                    type: 'assistant',
+                  },
+                  {
+                    content: [{ text: 'Anotado, saco DEFAULT_EFFORT.', type: 'text' }],
+                    id: 'assistant-1',
+                    type: 'assistant',
+                  },
+                ]
+              : [],
+        })),
+      },
+      permission: { list: vi.fn(async () => []), reply: vi.fn(async () => {}) },
+      session: {
+        create: vi.fn(async () => ({ id: 'session-multi' })),
+        list: vi.fn(async () => ({ cursor: {}, data: [] })),
+        prompt: vi.fn(async () => {
+          promptCount += 1;
+          if (promptCount === 1) firstPromptSent();
+        }),
+        update: vi.fn(async () => {}),
+        wait: vi.fn(async () => {
+          waitCount += 1;
+          if (waitCount === 1) {
+            await new Promise<void>((resolve) => {
+              releaseWait = resolve;
+            });
+          }
+        }),
+      },
+    } as unknown as OpenCodeClient;
+
+    const adapter = new MockAdapter('remotecode');
+    const bot = createAgent({
+      adapters: { mock: adapter },
+      allowedUsers: ['local-user'],
+      config: {
+        agent: 'build',
+        model: { id: 'model', providerID: 'provider', variant: 'high' },
+        reposRoot: '/tmp',
+        smallModel: { id: 'small-model', providerID: 'provider' },
+        workspaceRoot: '/tmp/workspaces',
+      },
+      openCode: client,
+      state: createMemoryState(),
+      userName: 'remotecode',
+      ...staticWorkspace,
+    });
+    bots.push(bot);
+    await bot.initialize();
+
+    const turnPromise = adapter.receive('multi', 'saca default effort');
+    await firstPromptReady;
+
+    // Step 1 emits short acknowledgment, then step 2 starts a long git push.
+    pushEvent({
+      data: {
+        assistantMessageID: 'assistant-1',
+        delta: 'Anotado, saco DEFAULT_EFFORT.',
+        ordinal: 0,
+        sessionID: 'session-multi',
+      },
+      type: 'session.text.delta',
+    });
+    pushEvent({
+      data: {
+        assistantMessageID: 'assistant-2',
+        sessionID: 'session-multi',
+      },
+      type: 'session.step.started',
+    });
+    pushEvent({
+      data: {
+        assistantMessageID: 'assistant-2',
+        id: 'tool-push',
+        name: 'shell',
+        sessionID: 'session-multi',
+      },
+      type: 'session.tool.input.started',
+    });
+    pushEvent({
+      data: {
+        assistantMessageID: 'assistant-2',
+        executed: true,
+        id: 'tool-push',
+        input: { command: 'git push' },
+        sessionID: 'session-multi',
+      },
+      type: 'session.tool.called',
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(adapter.outputs).toEqual(['Anotado, saco DEFAULT_EFFORT.']);
+    expect(adapter.streamSessionStatuses).toEqual([undefined]);
+    expect(adapter.typingStatuses.at(-1)).toBe('Running git push...');
+
+    await adapter.receive('multi', 'deberia quedar mas chica');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(adapter.typingStatuses.at(-1)).toBe('Updating approach...');
+
+    const beforeSecondSteer = adapter.typingStatuses.length;
+    await adapter.receive('multi', 'y actualiza la descripcion');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(adapter.typingStatuses.length).toBeGreaterThan(beforeSecondSteer);
+    expect(adapter.typingStatuses.at(-1)).toBe('Updating approach...');
+
+    const beforeKeepalive = adapter.typingStatuses.length;
+    await vi.advanceTimersByTimeAsync(90_000);
+    expect(adapter.typingStatuses.length).toBe(beforeKeepalive + 1);
+    expect(adapter.typingStatuses.at(-1)).toBe('Updating approach...');
+
+    pushEvent({
+      data: {
+        assistantMessageID: 'assistant-3',
+        delta: 'Subido y monitoreando.',
+        ordinal: 0,
+        sessionID: 'session-multi',
+      },
+      type: 'session.text.delta',
+    });
+    eventsDone = true;
+    notifyEvent?.();
+    releaseWait();
+    await turnPromise;
+
+    expect(adapter.outputs).toEqual(['Anotado, saco DEFAULT_EFFORT.', 'Subido y monitoreando.']);
+    expect(adapter.streamSessionStatuses).toEqual([undefined, undefined]);
+    expect(adapter.endTypingCount).toBe(0);
+
+    const finalStatusCount = adapter.typingStatuses.length;
+    await vi.advanceTimersByTimeAsync(180_000);
+    expect(adapter.typingStatuses.length).toBe(finalStatusCount);
   });
 });
