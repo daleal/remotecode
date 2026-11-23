@@ -20,6 +20,7 @@ const envSchema = zod.object({
   WORKSPACE_ROOT: zod.string().optional().default('~/remotecode'),
 
   OPENROUTER_API_KEY: zod.string().optional(),
+  DECISION_MODEL: zod.string().optional().default('~typesafe/jev-latest'),
 
   OPENCODE_URL: zod.url().optional().default('http://127.0.0.1:4096'),
   OPENCODE_AGENT: zod.string().optional().default('build'),

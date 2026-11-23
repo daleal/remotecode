@@ -1,12 +1,17 @@
 import { experimental_evaluate as evaluate } from 'ai';
 import type { Message, Thread } from 'chat';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { env } from '../config/env';
 import { shouldRespond } from '../should-respond';
 import type { ThreadState } from '../thread-session';
 
 vi.mock('ai', () => ({ experimental_evaluate: vi.fn() }));
 vi.mock('../config/env', () => ({
-  env: { OPENROUTER_API_KEY: 'test-key', SLACK_BOT_NAME: 'remotecode' },
+  env: {
+    OPENROUTER_API_KEY: 'test-key',
+    DECISION_MODEL: '~typesafe/jev-latest',
+    SLACK_BOT_NAME: 'remotecode',
+  },
 }));
 
 const message = (id: string, text: string, isMe = false) =>
@@ -51,6 +56,8 @@ const mockProbabilities = ({
 afterEach(() => {
   vi.restoreAllMocks();
   vi.mocked(evaluate).mockReset();
+  env.OPENROUTER_API_KEY = 'test-key';
+  env.DECISION_MODEL = '~typesafe/jev-latest';
 });
 
 describe('shouldRespond', () => {
@@ -122,6 +129,22 @@ describe('shouldRespond', () => {
       history: [{ text: 'Prior context' }],
       message: { text: 'Fix it' },
     });
+  });
+
+  it('uses the configured decision model', async () => {
+    mockProbabilities();
+    env.DECISION_MODEL = 'd1.2-ultra';
+
+    await expect(shouldRespond(thread([]), message('new', 'Fix it'))).resolves.toBe(true);
+    expect(vi.mocked(evaluate).mock.calls[0]?.[0].model).toMatchObject({ modelId: 'd1.2-ultra' });
+  });
+
+  it('skips evaluation when OPENROUTER_API_KEY is unset', async () => {
+    env.OPENROUTER_API_KEY = undefined;
+    env.DECISION_MODEL = 'd1.2-ultra';
+
+    await expect(shouldRespond(thread([]), message('new', 'Fix it'))).resolves.toBe(false);
+    expect(evaluate).not.toHaveBeenCalled();
   });
 
   it('logs and skips the reply when evaluation fails', async () => {

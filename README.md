@@ -120,8 +120,8 @@ from OpenCode prompt metadata.
 6. Run `bun install`, then `bun run start`.
 
 In channels, a mention subscribes the app to the thread. Mentions always trigger the agent;
-untagged replies from allowed users are evaluated by Jev (`~typesafe/jev-latest`) through OpenRouter
-using AI SDK's `experimental_evaluate`. The gate uses up to 20 recent messages, including the
+untagged replies from allowed users are evaluated by `DECISION_MODEL` (default
+`~typesafe/jev-latest`) through OpenRouter using AI SDK's `experimental_evaluate`. The gate uses up to 20 recent messages, including the
 assistant's replies. It separately evaluates whether a response/action is needed, whether the bot
 is addressed, whether its task is being continued, and whether someone else is the exclusive
 recipient. It requires the first and either the second or third (each at probability ≥ 0.7),
@@ -137,22 +137,23 @@ starts a separate session.
 
 ## Configuration
 
-| Variable               | Default                   | Purpose                                                                   |
-| ---------------------- | ------------------------- | ------------------------------------------------------------------------- |
-| `SLACK_BOT_TOKEN`      | required                  | Single-workspace bot token                                                |
-| `SLACK_APP_TOKEN`      | required                  | Socket Mode app token                                                     |
-| `SLACK_BOT_NAME`       | `remotecode`              | Mention username used by Chat SDK                                         |
-| `ALLOWED_SLACK_USERS`  | empty                     | Allowed user IDs; empty denies all mentions                               |
-| `OPENCODE_URL`         | `http://127.0.0.1:4096`   | OpenCode v2 server                                                        |
-| `REPOS_ROOT`           | `~/repos`                 | Root containing source Git repositories                                   |
-| `WORKSPACE_ROOT`       | `~/remotecode`            | Isolated thread workspaces                                                |
-| `OPENROUTER_API_KEY`   | optional                  | Enables additional smart features like responding to unmentioned messages |
-| `OPENCODE_AGENT`       | `build`                   | OpenCode agent                                                            |
-| `OPENCODE_MODEL`       | `openai/gpt-6.1-sol-fast` | Main model in `provider/model` form                                       |
-| `OPENCODE_SMALL_MODEL` | `openai/gpt-6-luna`       | Utility model in `provider/model` form                                    |
-| `OPENCODE_EFFORT`      | `medium`                  | Model variant/effort, such as `high`                                      |
-| `OPENCODE_USERNAME`    | `opencode`                | OpenCode Basic auth username                                              |
-| `OPENCODE_PASSWORD`    | required                  | OpenCode Basic auth password                                              |
+| Variable               | Default                   | Purpose                                                                      |
+| ---------------------- | ------------------------- | ---------------------------------------------------------------------------- |
+| `SLACK_BOT_TOKEN`      | required                  | Single-workspace bot token                                                   |
+| `SLACK_APP_TOKEN`      | required                  | Socket Mode app token                                                        |
+| `SLACK_BOT_NAME`       | `remotecode`              | Mention username used by Chat SDK                                            |
+| `ALLOWED_SLACK_USERS`  | empty                     | Allowed user IDs; empty denies all mentions                                  |
+| `OPENCODE_URL`         | `http://127.0.0.1:4096`   | OpenCode v2 server                                                           |
+| `REPOS_ROOT`           | `~/repos`                 | Root containing source Git repositories                                      |
+| `WORKSPACE_ROOT`       | `~/remotecode`            | Isolated thread workspaces                                                   |
+| `OPENROUTER_API_KEY`   | optional                  | Enables additional smart features like responding to unmentioned messages    |
+| `DECISION_MODEL`       | `~typesafe/jev-latest`    | OpenRouter decision model (e.g. `d1.2-ultra`); requires `OPENROUTER_API_KEY` |
+| `OPENCODE_AGENT`       | `build`                   | OpenCode agent                                                               |
+| `OPENCODE_MODEL`       | `openai/gpt-6.1-sol-fast` | Main model in `provider/model` form                                          |
+| `OPENCODE_SMALL_MODEL` | `openai/gpt-6-luna`       | Utility model in `provider/model` form                                       |
+| `OPENCODE_EFFORT`      | `medium`                  | Model variant/effort, such as `high`                                         |
+| `OPENCODE_USERNAME`    | `opencode`                | OpenCode Basic auth username                                                 |
+| `OPENCODE_PASSWORD`    | required                  | OpenCode Basic auth password                                                 |
 
 ## Local Mock
 

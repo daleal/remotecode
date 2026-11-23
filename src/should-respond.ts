@@ -5,7 +5,6 @@ import { env } from './config/env';
 import type { ThreadState } from './thread-session';
 
 const THRESHOLD = 0.7;
-const EVALUATION_MODEL = '~typesafe/jev-latest';
 
 export const shouldRespond = async (
   thread: Thread<ThreadState>,
@@ -40,7 +39,7 @@ const getRecentMessages = async (thread: Thread<ThreadState>, message: Message) 
 
 const evaluateResponse = (history: Message[], message: Message) =>
   evaluate({
-    model: createOpenRouter({ apiKey: env.OPENROUTER_API_KEY }).evaluationModel(EVALUATION_MODEL),
+    model: createOpenRouter({ apiKey: env.OPENROUTER_API_KEY }).evaluationModel(env.DECISION_MODEL),
     abortSignal: AbortSignal.timeout(10_000),
     maxRetries: 0,
     state: {
