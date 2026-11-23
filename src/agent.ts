@@ -1,7 +1,6 @@
-import type { OpenCodeClient } from '@opencode/client';
+import type { AutomationInfo, OpenCodeClient } from '@opencode/client';
 import {
   Chat,
-  StreamingPlan,
   type Adapter,
   type Message,
   type StateAdapter,
@@ -250,6 +249,10 @@ const createEventHub = (
   return { start, stop, subscribe };
 };
 
+const AUTOMATION_REACTION_EMOJI = 'stopwatch';
+const AUTOMATION_RECHECK_BUFFER_MS = 1500;
+const MAX_TIMEOUT_MS = 2_147_483_647;
+
 export const createAgent = (options: CreateAgentOptions) => {
   const bot = new Chat<typeof options.adapters, ThreadState>({
     adapters: options.adapters,
@@ -263,6 +266,8 @@ export const createAgent = (options: CreateAgentOptions) => {
   const activeTurns = new Map<string, ActiveTurn>();
   const activeTurnBySession = new Map<string, ActiveTurn>();
   const adapterNames = new Set(Object.keys(options.adapters));
+  const automationCheckTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const automationReactionBySession = new Map<string, string>();
   const autonomousTasks = new Set<Promise<void>>();
   const lastDeliveredAssistantBySession = new Map<string, string>();
   const pendingAutonomousSessions = new Set<string>();
@@ -278,6 +283,75 @@ export const createAgent = (options: CreateAgentOptions) => {
       autonomousTasks.delete(task);
     });
     return task;
+  };
+
+  const clearAutomationCheckTimer = (sessionID: string) => {
+    const timer = automationCheckTimers.get(sessionID);
+    if (!timer) return;
+    clearTimeout(timer);
+    automationCheckTimers.delete(sessionID);
+  };
+
+  const syncAutomationReaction = async (
+    thread: Thread<ThreadState>,
+    sessionID: string,
+    candidateMessageID?: string,
+  ) => {
+    if (shutdownAbort.signal.aborted) return;
+    const listAutomations = options.openCode.experimental?.automation?.list;
+    if (typeof listAutomations !== 'function') return;
+
+    let automations;
+    try {
+      automations = await listAutomations({ sessionID });
+    } catch (error) {
+      if (!shutdownAbort.signal.aborted) {
+        console.warn(`Could not list OpenCode automations for ${sessionID}`, error);
+      }
+      return;
+    }
+    if (shutdownAbort.signal.aborted) return;
+
+    const active = automations.filter((item) => item.status === 'active');
+    const currentMessageID = automationReactionBySession.get(sessionID);
+
+    if (active.length === 0) {
+      clearAutomationCheckTimer(sessionID);
+      if (currentMessageID) {
+        automationReactionBySession.delete(sessionID);
+        await removeReaction({
+          emoji: AUTOMATION_REACTION_EMOJI,
+          messageID: currentMessageID,
+          thread,
+        });
+      }
+      return;
+    }
+
+    if (!currentMessageID && candidateMessageID) {
+      const added = await addReaction({
+        emoji: AUTOMATION_REACTION_EMOJI,
+        messageID: candidateMessageID,
+        thread,
+      });
+      if (added) {
+        automationReactionBySession.set(sessionID, candidateMessageID);
+      }
+    }
+
+    clearAutomationCheckTimer(sessionID);
+    const earliestSilentCheckAt = earliestSilentAutomationCheck(active);
+    if (earliestSilentCheckAt === undefined) return;
+
+    const delay = Math.min(
+      Math.max(0, earliestSilentCheckAt - Date.now() + AUTOMATION_RECHECK_BUFFER_MS),
+      MAX_TIMEOUT_MS,
+    );
+    const timer = setTimeout(() => {
+      automationCheckTimers.delete(sessionID);
+      void trackAutonomousTask(syncAutomationReaction(thread, sessionID));
+    }, delay);
+    automationCheckTimers.set(sessionID, timer);
   };
 
   const createWaitGuard = (turn: ActiveTurn) => {
@@ -370,6 +444,7 @@ export const createAgent = (options: CreateAgentOptions) => {
         } else {
           await messenger.abort();
         }
+        await syncAutomationReaction(thread, sessionID, messenger.lastPostedMessageID());
       } catch (error) {
         await messenger.abort();
         if (!(error instanceof TurnAbortedError || shutdownAbort.signal.aborted)) {
@@ -549,6 +624,10 @@ export const createAgent = (options: CreateAgentOptions) => {
   const originalShutdown = bot.shutdown.bind(bot);
   bot.shutdown = async () => {
     shutdownAbort.abort();
+    for (const timer of automationCheckTimers.values()) {
+      clearTimeout(timer);
+    }
+    automationCheckTimers.clear();
     await eventHub?.stop();
     await Promise.allSettled([...autonomousTasks]);
     await originalShutdown();
@@ -675,6 +754,9 @@ export const createAgent = (options: CreateAgentOptions) => {
 
       await messenger.finish(response);
       posted = true;
+      if (turnSessionID) {
+        await syncAutomationReaction(thread, turnSessionID, messenger.lastPostedMessageID());
+      }
     } catch (error) {
       await messenger.abort();
       if (!turn.sessionSettled) {
@@ -932,17 +1014,19 @@ const postResponse = async (
   uiAdapters?: readonly string[],
 ) => {
   if (!supportsUI(thread.adapter.name, uiAdapters)) {
-    await thread.post({ markdown: response });
-    return;
+    const sent = await thread.post({ markdown: response });
+    return sent?.id;
   }
 
+  let lastMessageID: string | undefined;
   for (const part of parseResponseParts(response)) {
-    if (part.type === 'card') {
-      await thread.post(part.card);
-    } else {
-      await thread.post({ markdown: part.markdown });
-    }
+    const sent =
+      part.type === 'card'
+        ? await thread.post(part.card)
+        : await thread.post({ markdown: part.markdown });
+    if (sent?.id) lastMessageID = sent.id;
   }
+  return lastMessageID;
 };
 
 const STATUS_KEEPALIVE_MS = 90_000;
@@ -965,6 +1049,7 @@ const createTurnMessenger = ({
   let desiredStatus: string | undefined;
   let hasActiveTypingStatus = false;
   let keepaliveTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastPostedMessageID: string | undefined;
   let lastSentStatus: string | undefined;
   let pendingPosts = 0;
   let postChain: Promise<void> = Promise.resolve();
@@ -1058,7 +1143,8 @@ const createTurnMessenger = ({
       statusDirty = true;
       stopKeepalive();
       enqueuePost(async () => {
-        await thread.post(new StreamingPlan(message.chunkQueue));
+        const sent = await thread.post(message.chunkQueue);
+        if (sent?.id) lastPostedMessageID = sent.id;
         hasActiveTypingStatus = false;
       });
     }
@@ -1094,7 +1180,8 @@ const createTurnMessenger = ({
       stopKeepalive();
       enqueuePost(async () => {
         for (const card of cards) {
-          await thread.post(card);
+          const sent = await thread.post(card);
+          if (sent?.id) lastPostedMessageID = sent.id;
         }
         hasActiveTypingStatus = false;
       });
@@ -1108,7 +1195,8 @@ const createTurnMessenger = ({
     await postChain;
     if (streamError !== undefined) throw streamError;
     if (!postedAnyMessage) {
-      await postResponse(thread, response, uiAdapters);
+      const sentID = await postResponse(thread, response, uiAdapters);
+      if (sentID) lastPostedMessageID = sentID;
       postedAnyMessage = true;
       hasActiveTypingStatus = false;
     }
@@ -1140,6 +1228,7 @@ const createTurnMessenger = ({
     emitChunk,
     endMessage: closeCurrentMessage,
     finish,
+    lastPostedMessageID: () => lastPostedMessageID,
     setStatus,
   };
 };
@@ -1251,11 +1340,35 @@ const setAdapterThreadTitle = async (thread: Thread<ThreadState>, title: string)
   }
 };
 
+const earliestSilentAutomationCheck = (automations: readonly AutomationInfo[]) => {
+  let earliest: number | undefined;
+  for (const item of automations) {
+    const candidates = [item.action.type !== 'prompt' ? item.nextDueAt : undefined, item.expires];
+    for (const timestamp of candidates) {
+      if (typeof timestamp !== 'number') continue;
+      if (earliest === undefined || timestamp < earliest) {
+        earliest = timestamp;
+      }
+    }
+  }
+  return earliest;
+};
+
 const addReaction = async ({ emoji, messageID, thread }: ReactionOptions) => {
   try {
     await thread.adapter.addReaction(thread.id, messageID, emoji);
+    return true;
   } catch (error) {
     console.error(`Could not add ${emoji} reaction`, error);
+    return false;
+  }
+};
+
+const removeReaction = async ({ emoji, messageID, thread }: ReactionOptions) => {
+  try {
+    await thread.adapter.removeReaction(thread.id, messageID, emoji);
+  } catch (error) {
+    console.error(`Could not remove ${emoji} reaction`, error);
   }
 };
 

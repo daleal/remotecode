@@ -1789,4 +1789,258 @@ describe('Slack agent', () => {
     await expect(state.isSubscribed('mock:local:restarted')).resolves.toBe(true);
     expect(warn).toHaveBeenCalledWith('OpenCode event stream closed; reconnecting');
   });
+
+  it('adds a stopwatch reaction on the setup message and keeps it until every automation finishes', async () => {
+    const pendingEvents: unknown[] = [];
+    let notifyEvent: (() => void) | undefined;
+    let eventsDone = false;
+    const pushEvent = (event: unknown) => {
+      pendingEvents.push(event);
+      notifyEvent?.();
+      notifyEvent = undefined;
+    };
+
+    const messages: unknown[] = [];
+    const waitResolvers: Array<() => void> = [];
+    let waitStarted: (() => void) | undefined;
+    const nextWait = () =>
+      new Promise<void>((resolve) => {
+        waitStarted = resolve;
+      });
+    const releaseWait = () => {
+      waitResolvers.shift()?.();
+    };
+
+    let remainingRuns = 3;
+    const client = {
+      event: {
+        subscribe: vi.fn(async function* ({ signal }: { signal?: AbortSignal } = {}) {
+          while (!signal?.aborted && (!eventsDone || pendingEvents.length > 0)) {
+            if (pendingEvents.length === 0) {
+              await new Promise<void>((resolve) => {
+                notifyEvent = resolve;
+                signal?.addEventListener('abort', () => resolve(), { once: true });
+              });
+              continue;
+            }
+            yield pendingEvents.shift();
+          }
+        }),
+      },
+      experimental: {
+        automation: {
+          list: vi.fn(async () => [
+            {
+              action: { prompt: 'ping', to: { session: 'session-stopwatch' }, type: 'prompt' },
+              id: 'aut-3x',
+              name: '3x ping',
+              status: remainingRuns > 0 ? 'active' : 'done',
+            },
+          ]),
+        },
+        generate: { text: vi.fn(async () => ({ text: 'Stopwatch test' })) },
+      },
+      message: {
+        list: vi.fn(async () => ({ cursor: {}, data: [...messages].reverse() })),
+      },
+      permission: { list: vi.fn(async () => []), reply: vi.fn(async () => {}) },
+      session: {
+        create: vi.fn(async () => ({ id: 'session-stopwatch' })),
+        list: vi.fn(async () => ({ cursor: {}, data: [] })),
+        prompt: vi.fn(async (input: { metadata?: Record<string, unknown> }) => {
+          messages.push({ id: `user-${messages.length}`, metadata: input.metadata, type: 'user' });
+        }),
+        update: vi.fn(async () => {}),
+        wait: vi.fn(async () => {
+          waitStarted?.();
+          waitStarted = undefined;
+          await new Promise<void>((resolve) => {
+            waitResolvers.push(resolve);
+          });
+        }),
+      },
+    } as unknown as OpenCodeClient;
+
+    const adapter = new MockAdapter('remotecode');
+    const bot = createAgent({
+      adapters: { mock: adapter },
+      allowedUsers: ['local-user'],
+      config: {
+        agent: 'build',
+        model: { id: 'model', providerID: 'provider', variant: 'high' },
+        reposRoot: '/tmp',
+        smallModel: { id: 'small-model', providerID: 'provider' },
+        workspaceRoot: '/tmp/workspaces',
+      },
+      openCode: client,
+      state: createMemoryState(),
+      userName: 'remotecode',
+      ...staticWorkspace,
+    });
+    bots.push(bot);
+    await bot.initialize();
+
+    // Initial setup turn posts "Dejé una automatización" -> gets :stopwatch:.
+    const waitSetup = nextWait();
+    const setupTurn = adapter.receive('stopwatch', 'avísame 3 veces');
+    await waitSetup;
+    messages.push(
+      {
+        content: [{ text: 'Dejé una automatización', type: 'text' }],
+        id: 'asst-setup',
+        type: 'assistant',
+      },
+      { id: 'idle-setup', type: 'idle' },
+    );
+    pushEvent({
+      data: {
+        assistantMessageID: 'asst-setup',
+        delta: 'Dejé una automatización',
+        ordinal: 0,
+        sessionID: 'session-stopwatch',
+      },
+      type: 'session.text.delta',
+    });
+    await Promise.resolve();
+    releaseWait();
+    await setupTurn;
+
+    expect(adapter.reactions).toEqual([{ emoji: 'stopwatch', messageId: expect.any(String) }]);
+    const setupMessageId = adapter.reactions[0]?.messageId;
+    expect(adapter.removedReactions).toEqual([]);
+
+    // Runs 1/3 and 2/3 keep :stopwatch: on the original setup message without removing or duplicating it.
+    for (const run of [1, 2, 3]) {
+      const waitRun = nextWait();
+      remainingRuns = 3 - run;
+      messages.push({
+        id: `msg_aut_${run}`,
+        metadata: { automation: { id: 'aut-3x', name: '3x ping', run } },
+        text: `Ping ${run}/3`,
+        type: 'user',
+      });
+      pushEvent({
+        data: {
+          inboxID: `msg_aut_${run}`,
+          item: {
+            delivery: 'queue',
+            payload: {
+              metadata: { automation: { id: 'aut-3x', name: '3x ping', run } },
+              text: `Ping ${run}/3`,
+            },
+            type: 'user',
+          },
+          sessionID: 'session-stopwatch',
+        },
+        type: 'session.inbox.enqueued',
+      });
+      await waitRun;
+
+      messages.push(
+        {
+          content: [{ text: `Ping ${run}/3`, type: 'text' }],
+          id: `asst-run-${run}`,
+          type: 'assistant',
+        },
+        { id: `idle-run-${run}`, type: 'idle' },
+      );
+      pushEvent({
+        data: {
+          assistantMessageID: `asst-run-${run}`,
+          delta: `Ping ${run}/3`,
+          ordinal: 0,
+          sessionID: 'session-stopwatch',
+        },
+        type: 'session.text.delta',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      releaseWait();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(adapter.reactions).toEqual([{ emoji: 'stopwatch', messageId: setupMessageId }]);
+      if (run < 3) {
+        expect(adapter.removedReactions).toEqual([]);
+      } else {
+        expect(adapter.removedReactions).toEqual([
+          { emoji: 'stopwatch', messageId: setupMessageId },
+        ]);
+      }
+    }
+
+    eventsDone = true;
+    notifyEvent?.();
+  });
+
+  it('removes the stopwatch reaction when a silent code automation finishes without sending a message', async () => {
+    vi.useFakeTimers();
+    const now = Date.now();
+    let active = true;
+    const messages: unknown[] = [];
+
+    const client = {
+      experimental: {
+        automation: {
+          list: vi.fn(async () => [
+            {
+              action: { code: 'return { done: true }', type: 'code' },
+              id: 'aut-silent',
+              name: 'Silent check',
+              nextDueAt: now + 5000,
+              status: active ? 'active' : 'done',
+            },
+          ]),
+        },
+        generate: { text: vi.fn(async () => ({ text: 'Silent automation' })) },
+      },
+      message: {
+        list: vi.fn(async () => ({ cursor: {}, data: [...messages].reverse() })),
+      },
+      permission: { list: vi.fn(async () => []), reply: vi.fn(async () => {}) },
+      session: {
+        create: vi.fn(async () => ({ id: 'session-silent' })),
+        list: vi.fn(async () => ({ cursor: {}, data: [] })),
+        prompt: vi.fn(async (input: { metadata?: Record<string, unknown> }) => {
+          messages.push(
+            { id: 'user-1', metadata: input.metadata, type: 'user' },
+            {
+              content: [{ text: 'Monitoreando en silencio.', type: 'text' }],
+              id: 'asst-1',
+              type: 'assistant',
+            },
+          );
+        }),
+        update: vi.fn(async () => {}),
+        wait: vi.fn(async () => {}),
+      },
+    } as unknown as OpenCodeClient;
+
+    const adapter = new MockAdapter('remotecode');
+    const bot = createAgent({
+      adapters: { mock: adapter },
+      allowedUsers: ['local-user'],
+      config: {
+        agent: 'build',
+        model: { id: 'model', providerID: 'provider', variant: 'high' },
+        reposRoot: '/tmp',
+        smallModel: { id: 'small-model', providerID: 'provider' },
+        workspaceRoot: '/tmp/workspaces',
+      },
+      openCode: client,
+      state: createMemoryState(),
+      userName: 'remotecode',
+      ...staticWorkspace,
+    });
+    bots.push(bot);
+    await bot.initialize();
+
+    await adapter.receive('silent', 'revisa en 5s sin avisar');
+    expect(adapter.reactions).toEqual([{ emoji: 'stopwatch', messageId: expect.any(String) }]);
+    expect(adapter.removedReactions).toEqual([]);
+
+    active = false;
+    await vi.advanceTimersByTimeAsync(7000);
+    expect(adapter.removedReactions).toEqual([
+      { emoji: 'stopwatch', messageId: adapter.reactions[0]?.messageId },
+    ]);
+  });
 });
