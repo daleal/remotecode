@@ -2044,6 +2044,161 @@ describe('Slack agent', () => {
     ]);
   });
 
+  it('adds the stopwatch reaction as soon as the setup message posts even if automation ticks fire before the turn goes idle', async () => {
+    const pendingEvents: unknown[] = [];
+    let notifyEvent: (() => void) | undefined;
+    let eventsDone = false;
+    const pushEvent = (event: unknown) => {
+      pendingEvents.push(event);
+      notifyEvent?.();
+      notifyEvent = undefined;
+    };
+
+    const messages: unknown[] = [];
+    let releaseWait = () => {};
+    let waitStarted = () => {};
+    const waitReady = new Promise<void>((resolve) => {
+      waitStarted = resolve;
+    });
+    let releaseTitle = () => {};
+    const titleGate = new Promise<void>((resolve) => {
+      releaseTitle = resolve;
+    });
+
+    let automationStatus: 'active' | 'done' = 'active';
+    const client = {
+      event: {
+        subscribe: vi.fn(async function* ({ signal }: { signal?: AbortSignal } = {}) {
+          while (!signal?.aborted && (!eventsDone || pendingEvents.length > 0)) {
+            if (pendingEvents.length === 0) {
+              await new Promise<void>((resolve) => {
+                notifyEvent = resolve;
+                signal?.addEventListener('abort', () => resolve(), { once: true });
+              });
+              continue;
+            }
+            yield pendingEvents.shift();
+          }
+        }),
+      },
+      experimental: {
+        automation: {
+          list: vi.fn(async () => [
+            {
+              action: { code: 'return { done: false }', type: 'code' },
+              id: 'aut-fast',
+              name: 'Fast ticks',
+              status: automationStatus,
+            },
+          ]),
+        },
+        generate: {
+          text: vi.fn(async () => {
+            await titleGate;
+            return { text: 'Fast ticks' };
+          }),
+        },
+      },
+      message: {
+        list: vi.fn(async () => ({ cursor: {}, data: [...messages].reverse() })),
+      },
+      permission: { list: vi.fn(async () => []), reply: vi.fn(async () => {}) },
+      session: {
+        create: vi.fn(async () => ({ id: 'session-fast-ticks' })),
+        list: vi.fn(async () => ({ cursor: {}, data: [] })),
+        prompt: vi.fn(async (input: { metadata?: Record<string, unknown> }) => {
+          messages.push({ id: 'user-1', metadata: input.metadata, type: 'user' });
+        }),
+        update: vi.fn(async () => {}),
+        wait: vi.fn(async () => {
+          waitStarted();
+          await new Promise<void>((resolve) => {
+            releaseWait = resolve;
+          });
+        }),
+      },
+    } as unknown as OpenCodeClient;
+
+    const adapter = new MockAdapter('remotecode');
+    const bot = createAgent({
+      adapters: { mock: adapter },
+      allowedUsers: ['local-user'],
+      config: {
+        agent: 'build',
+        model: { id: 'model', providerID: 'provider', variant: 'high' },
+        reposRoot: '/tmp',
+        smallModel: { id: 'small-model', providerID: 'provider' },
+        workspaceRoot: '/tmp/workspaces',
+      },
+      openCode: client,
+      state: createMemoryState(),
+      userName: 'remotecode',
+      ...staticWorkspace,
+    });
+    bots.push(bot);
+    await bot.initialize();
+
+    const turn = adapter.receive('fast-ticks', 'manda 2 mensajes cada 15s');
+    await waitReady;
+
+    // Setup message streams, then Tick 1/2 starts before the session ever goes idle.
+    messages.push({
+      content: [{ text: 'Listo! Creé la automation.', type: 'text' }],
+      id: 'asst-setup',
+      type: 'assistant',
+    });
+    pushEvent({
+      data: {
+        assistantMessageID: 'asst-setup',
+        delta: 'Listo! Creé la automation.',
+        ordinal: 0,
+        sessionID: 'session-fast-ticks',
+      },
+      type: 'session.text.delta',
+    });
+    pushEvent({
+      data: {
+        assistantMessageID: 'asst-tick-1',
+        sessionID: 'session-fast-ticks',
+      },
+      type: 'session.step.started',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 15));
+
+    // Stopwatch is already on the setup message mid-turn (before idle and before title generation).
+    expect(adapter.reactions).toEqual([{ emoji: 'stopwatch', messageId: expect.any(String) }]);
+    const setupMessageId = adapter.reactions[0]?.messageId;
+    expect(adapter.removedReactions).toEqual([]);
+
+    // Final tick finishes and marks automation done while title generation is still blocked.
+    automationStatus = 'done';
+    messages.push({
+      content: [{ text: 'Mensaje 2/2 terminado.', type: 'text' }],
+      id: 'asst-tick-1',
+      type: 'assistant',
+    });
+    pushEvent({
+      data: {
+        assistantMessageID: 'asst-tick-1',
+        delta: 'Mensaje 2/2 terminado.',
+        ordinal: 0,
+        sessionID: 'session-fast-ticks',
+      },
+      type: 'session.text.delta',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    releaseWait();
+    await new Promise((resolve) => setTimeout(resolve, 15));
+
+    // Stopwatch is removed as soon as the final message finishes, without waiting for title generation.
+    expect(adapter.removedReactions).toEqual([{ emoji: 'stopwatch', messageId: setupMessageId }]);
+
+    releaseTitle();
+    eventsDone = true;
+    notifyEvent?.();
+    await turn;
+  });
+
   it('prefers adapter.setAssistantTitle over legacy webClient.assistant.threads.setTitle', async () => {
     const messages: unknown[] = [];
     const client = {

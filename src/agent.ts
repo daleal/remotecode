@@ -52,6 +52,7 @@ type ProcessMentionOptions = {
   onAssistantMessage?: (assistantMessageID: string) => void;
   onChunk?: (chunk: StreamChunk) => void;
   onMessageEnd?: () => void;
+  onResponse?: (response: string) => Promise<void> | void;
   onSessionReady?: (sessionID: string, lastMessageID: string) => void;
   onStatus?: (status: string, options?: { force?: boolean }) => Promise<void> | void;
   provisionRepos?: typeof provisionWorkspaceRepos;
@@ -268,6 +269,7 @@ export const createAgent = (options: CreateAgentOptions) => {
   const adapterNames = new Set(Object.keys(options.adapters));
   const automationCheckTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const automationReactionBySession = new Map<string, string>();
+  const automationSyncChainBySession = new Map<string, Promise<void>>();
   const autonomousTasks = new Set<Promise<void>>();
   const lastDeliveredAssistantBySession = new Map<string, string>();
   const pendingAutonomousSessions = new Set<string>();
@@ -292,7 +294,7 @@ export const createAgent = (options: CreateAgentOptions) => {
     automationCheckTimers.delete(sessionID);
   };
 
-  const syncAutomationReaction = async (
+  const syncAutomationReactionNow = async (
     thread: Thread<ThreadState>,
     sessionID: string,
     candidateMessageID?: string,
@@ -354,6 +356,24 @@ export const createAgent = (options: CreateAgentOptions) => {
     automationCheckTimers.set(sessionID, timer);
   };
 
+  const syncAutomationReaction = (
+    thread: Thread<ThreadState>,
+    sessionID: string,
+    candidateMessageID?: string,
+  ): Promise<void> => {
+    const previous = automationSyncChainBySession.get(sessionID) ?? Promise.resolve();
+    const next = previous
+      .catch(() => {})
+      .then(() => syncAutomationReactionNow(thread, sessionID, candidateMessageID));
+    automationSyncChainBySession.set(sessionID, next);
+    void next.finally(() => {
+      if (automationSyncChainBySession.get(sessionID) === next) {
+        automationSyncChainBySession.delete(sessionID);
+      }
+    });
+    return next;
+  };
+
   const createWaitGuard = (turn: ActiveTurn) => {
     let observedSteerEpoch = turn.steerEpoch;
     let observedWakeEpoch = turn.wakeEpoch;
@@ -386,6 +406,9 @@ export const createAgent = (options: CreateAgentOptions) => {
     activeTurnBySession.set(sessionID, turn);
 
     const messenger = createTurnMessenger({
+      onMessagePosted: (messageID) => {
+        void trackAutonomousTask(syncAutomationReaction(thread, sessionID, messageID));
+      },
       thread,
       uiAdapters: options.uiAdapters,
     });
@@ -674,8 +697,13 @@ export const createAgent = (options: CreateAgentOptions) => {
 
     await thread.subscribe();
 
+    let turnSessionID: string | undefined;
     const existingState = await thread.state;
     const messenger = createTurnMessenger({
+      onMessagePosted: (messageID) => {
+        if (!turnSessionID) return;
+        void trackAutonomousTask(syncAutomationReaction(thread, turnSessionID, messageID));
+      },
       thread,
       uiAdapters: options.uiAdapters,
     });
@@ -696,7 +724,6 @@ export const createAgent = (options: CreateAgentOptions) => {
 
     let outcomeEmoji: 'octagonal_sign' | 'x' | undefined;
     let posted = false;
-    let turnSessionID: string | undefined;
     try {
       const workspace =
         existingState?.directory &&
@@ -729,6 +756,13 @@ export const createAgent = (options: CreateAgentOptions) => {
         },
         onChunk: messenger.emitChunk,
         onMessageEnd: messenger.endMessage,
+        onResponse: async (response) => {
+          await messenger.finish(response);
+          posted = true;
+          if (turnSessionID) {
+            await syncAutomationReaction(thread, turnSessionID, messenger.lastPostedMessageID());
+          }
+        },
         onSessionReady: (sessionID, lastMessageID) => {
           turnSessionID = sessionID;
           sessionThreads.set(sessionID, thread.id);
@@ -752,10 +786,12 @@ export const createAgent = (options: CreateAgentOptions) => {
         workspace,
       });
 
-      await messenger.finish(response);
-      posted = true;
-      if (turnSessionID) {
-        await syncAutomationReaction(thread, turnSessionID, messenger.lastPostedMessageID());
+      if (!posted) {
+        await messenger.finish(response);
+        posted = true;
+        if (turnSessionID) {
+          await syncAutomationReaction(thread, turnSessionID, messenger.lastPostedMessageID());
+        }
       }
     } catch (error) {
       await messenger.abort();
@@ -1038,9 +1074,11 @@ type MessageStream = {
 };
 
 const createTurnMessenger = ({
+  onMessagePosted,
   thread,
   uiAdapters,
 }: {
+  onMessagePosted?: (messageID: string) => void;
   thread: Thread<ThreadState>;
   uiAdapters?: readonly string[];
 }) => {
@@ -1144,7 +1182,10 @@ const createTurnMessenger = ({
       stopKeepalive();
       enqueuePost(async () => {
         const sent = await thread.post(message.chunkQueue);
-        if (sent?.id) lastPostedMessageID = sent.id;
+        if (sent?.id) {
+          lastPostedMessageID = sent.id;
+          onMessagePosted?.(sent.id);
+        }
         hasActiveTypingStatus = false;
       });
     }
@@ -1181,7 +1222,10 @@ const createTurnMessenger = ({
       enqueuePost(async () => {
         for (const card of cards) {
           const sent = await thread.post(card);
-          if (sent?.id) lastPostedMessageID = sent.id;
+          if (sent?.id) {
+            lastPostedMessageID = sent.id;
+            onMessagePosted?.(sent.id);
+          }
         }
         hasActiveTypingStatus = false;
       });
@@ -1196,7 +1240,10 @@ const createTurnMessenger = ({
     if (streamError !== undefined) throw streamError;
     if (!postedAnyMessage) {
       const sentID = await postResponse(thread, response, uiAdapters);
-      if (sentID) lastPostedMessageID = sentID;
+      if (sentID) {
+        lastPostedMessageID = sentID;
+        onMessagePosted?.(sentID);
+      }
       postedAnyMessage = true;
       hasActiveTypingStatus = false;
     }
@@ -1380,6 +1427,7 @@ export const processMention = async ({
   onAssistantMessage,
   onChunk,
   onMessageEnd,
+  onResponse,
   onSessionReady,
   onStatus,
   provisionRepos = provisionWorkspaceRepos,
@@ -1500,6 +1548,8 @@ export const processMention = async ({
   });
   const finalLastMessageID = getLastMessageID?.() ?? lastMessageID;
   await thread.setState({ lastMessageID: finalLastMessageID, sessionID: session.sessionID });
+
+  await onResponse?.(response);
 
   if (session.created) {
     const title = await generateAndApplySessionTitle({
