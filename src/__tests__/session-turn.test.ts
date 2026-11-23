@@ -638,4 +638,401 @@ describe('runSessionTurn', () => {
     expect(messagesEmitted).toEqual([['Anotado, ya lo cambio.'], ['Quedó listo.']]);
     expect(statuses).toEqual(['Thinking...', 'Running command...', 'Running git push...']);
   });
+
+  it('waits for chained background and timed-out shell commands, flushing intermediate messages and updating status', async () => {
+    vi.useFakeTimers();
+    const pendingEvents: unknown[] = [];
+    let notifyEvent: (() => void) | undefined;
+    let eventsDone = false;
+    const pushEvent = (event: unknown) => {
+      pendingEvents.push(event);
+      notifyEvent?.();
+      notifyEvent = undefined;
+    };
+
+    const messages: unknown[] = [];
+    let waitCount = 0;
+    let releaseWait: (() => void) | undefined;
+    const messagesEmitted: string[][] = [[]];
+    const statuses: string[] = [];
+
+    const client = {
+      event: {
+        subscribe: vi.fn(async function* () {
+          while (!eventsDone || pendingEvents.length > 0) {
+            if (pendingEvents.length === 0) {
+              await new Promise<void>((resolve) => {
+                notifyEvent = resolve;
+              });
+              continue;
+            }
+            yield pendingEvents.shift();
+          }
+        }),
+      },
+      message: {
+        list: vi.fn(async () => ({ cursor: {}, data: [...messages].reverse() })),
+      },
+      permission: { list: vi.fn(async () => []), reply: vi.fn(async () => {}) },
+      session: {
+        list: vi.fn(async () => ({ cursor: {}, data: [] })),
+        prompt: vi.fn(async () => {
+          messages.push({ id: 'user-1', type: 'user' });
+        }),
+        wait: vi.fn(async () => {
+          waitCount += 1;
+          await new Promise<void>((resolve) => {
+            releaseWait = resolve;
+          });
+        }),
+      },
+    } as unknown as OpenCodeClient;
+
+    const turn = runSessionTurn({
+      adapterName: 'slack',
+      client,
+      metadata,
+      onChunk: (chunk) => {
+        if (chunk.type === 'markdown_text') {
+          messagesEmitted.at(-1)?.push(chunk.text);
+        }
+      },
+      onMessageEnd: () => {
+        messagesEmitted.push([]);
+      },
+      onStatus: (status) => statuses.push(status),
+      prompt: 'Open PR and babysit it',
+      sessionID: 'session-bg-shell',
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(waitCount).toBe(1);
+
+    // Round 1: agent starts an explicit background shell and posts a draft PR update.
+    messages.push(
+      {
+        content: [
+          {
+            id: 'call-sh-1',
+            name: 'shell',
+            state: {
+              input: { background: true, command: 'python3 watch.py' },
+              metadata: { pid: 101, shellID: 'sh-1', status: 'running' },
+              status: 'completed',
+            },
+            type: 'tool',
+          },
+        ],
+        id: 'assistant-1a',
+        type: 'assistant',
+      },
+      {
+        content: [{ text: 'PR abierta en draft.', type: 'text' }],
+        id: 'assistant-1b',
+        type: 'assistant',
+      },
+      { id: 'idle-1', type: 'idle' },
+    );
+    pushEvent({
+      data: {
+        assistantMessageID: 'assistant-1b',
+        delta: 'PR abierta en draft.',
+        ordinal: 0,
+        sessionID: 'session-bg-shell',
+      },
+      type: 'session.text.delta',
+    });
+    releaseWait?.();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Trailing reasoning on the already-flushed message must not clobber waiting status.
+    pushEvent({
+      data: {
+        assistantMessageID: 'assistant-1b',
+        ordinal: 1,
+        sessionID: 'session-bg-shell',
+      },
+      type: 'session.reasoning.started',
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(messagesEmitted).toEqual([['PR abierta en draft.'], []]);
+    expect(statuses).toEqual(['Waiting for background command...']);
+
+    // Round 2: sh-1 finishes; agent runs a foreground shell that times out into background (no input.background).
+    messages.push({
+      id: 'syn-sh-1',
+      metadata: { exit: 0, jobID: 'sh-1', shellID: 'sh-1', source: 'shell', state: 'completed' },
+      text: '<shell id="sh-1" state="completed">',
+      type: 'synthetic',
+    });
+    pushEvent({
+      data: {
+        assistantMessageID: 'assistant-2a',
+        sessionID: 'session-bg-shell',
+      },
+      type: 'session.step.started',
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(waitCount).toBe(2);
+    expect(statuses.at(-1)).toBe('Thinking...');
+
+    messages.push(
+      {
+        content: [
+          {
+            id: 'call-sh-2',
+            name: 'shell',
+            state: {
+              input: { command: 'python3 watch.py --round 2' },
+              metadata: { pid: 102, shellID: 'sh-2', status: 'running' },
+              status: 'completed',
+            },
+            type: 'tool',
+          },
+        ],
+        id: 'assistant-2a',
+        type: 'assistant',
+      },
+      {
+        content: [{ text: 'Update de babysit.', type: 'text' }],
+        id: 'assistant-2b',
+        type: 'assistant',
+      },
+      { id: 'idle-2', type: 'idle' },
+    );
+    pushEvent({
+      data: {
+        assistantMessageID: 'assistant-2b',
+        delta: 'Update de babysit.',
+        ordinal: 0,
+        sessionID: 'session-bg-shell',
+      },
+      type: 'session.text.delta',
+    });
+    releaseWait?.();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(messagesEmitted).toEqual([['PR abierta en draft.'], ['Update de babysit.'], []]);
+    expect(statuses.at(-1)).toBe('Waiting for background command...');
+
+    // Round 3: sh-2 finishes; agent posts final ready-for-review message.
+    messages.push({
+      id: 'syn-sh-2',
+      metadata: { exit: 0, jobID: 'sh-2', shellID: 'sh-2', source: 'shell', state: 'completed' },
+      text: '<shell id="sh-2" state="completed">',
+      type: 'synthetic',
+    });
+    pushEvent({
+      data: {
+        assistantMessageID: 'assistant-3',
+        sessionID: 'session-bg-shell',
+      },
+      type: 'session.step.started',
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(waitCount).toBe(3);
+
+    messages.push(
+      {
+        content: [{ text: 'Lista para review humano.', type: 'text' }],
+        id: 'assistant-3',
+        type: 'assistant',
+      },
+      { id: 'idle-3', type: 'idle' },
+    );
+    pushEvent({
+      data: {
+        assistantMessageID: 'assistant-3',
+        delta: 'Lista para review humano.',
+        ordinal: 0,
+        sessionID: 'session-bg-shell',
+      },
+      type: 'session.text.delta',
+    });
+    eventsDone = true;
+    notifyEvent?.();
+    releaseWait?.();
+
+    const result = await turn;
+    expect(result).toBe('Lista para review humano.');
+    expect(messagesEmitted).toEqual([
+      ['PR abierta en draft.'],
+      ['Update de babysit.'],
+      ['Lista para review humano.'],
+    ]);
+    expect(statuses).toEqual([
+      'Waiting for background command...',
+      'Thinking...',
+      'Waiting for background command...',
+      'Thinking...',
+    ]);
+    for (const status of statuses) {
+      expect(status.length).toBeLessThanOrEqual(50);
+    }
+  });
+
+  it('tracks V2 background subagents by running metadata, updates between partial completions, and handles follow-ups', async () => {
+    vi.useFakeTimers();
+    const messages: unknown[] = [];
+    let waitCount = 0;
+    let releaseWait: (() => void) | undefined;
+    const statuses: string[] = [];
+
+    const client = {
+      message: {
+        list: vi.fn(async () => ({ cursor: {}, data: [...messages].reverse() })),
+      },
+      permission: { list: vi.fn(async () => []), reply: vi.fn(async () => {}) },
+      session: {
+        list: vi.fn(async () => ({ cursor: {}, data: [] })),
+        prompt: vi.fn(async () => {
+          messages.push({ id: 'user-1', type: 'user' });
+        }),
+        wait: vi.fn(async () => {
+          waitCount += 1;
+          await new Promise<void>((resolve) => {
+            releaseWait = resolve;
+          });
+        }),
+      },
+    } as unknown as OpenCodeClient;
+
+    const turn = runSessionTurn({
+      adapterName: 'slack',
+      client,
+      metadata,
+      onStatus: (status) => statuses.push(status),
+      prompt: 'Analyze repos',
+      sessionID: 'session-subagents',
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(waitCount).toBe(1);
+
+    // Launch two V2 subagents (no input.background, metadata.status === 'running') + one completed legacy subagent.
+    messages.push(
+      {
+        content: [
+          {
+            id: 'call-legacy-fg',
+            name: 'subagent',
+            state: {
+              input: { agent: 'explore', prompt: 'sync' },
+              metadata: { sessionID: 'child-fg', status: 'completed' },
+              status: 'completed',
+            },
+            type: 'tool',
+          },
+          {
+            id: 'call-sub-1',
+            name: 'subagent',
+            state: {
+              input: { agent: 'explore', prompt: 'repo a' },
+              metadata: { sessionID: 'child-1', status: 'running' },
+              status: 'completed',
+            },
+            type: 'tool',
+          },
+          {
+            id: 'call-sub-2',
+            name: 'subagent',
+            state: {
+              input: { agent: 'explore', prompt: 'repo b' },
+              metadata: { sessionID: 'child-2', status: 'running' },
+              status: 'completed',
+            },
+            type: 'tool',
+          },
+        ],
+        id: 'assistant-1',
+        type: 'assistant',
+      },
+      { id: 'idle-1', type: 'idle' },
+    );
+    releaseWait?.();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(statuses).toEqual(['Waiting for subagents...']);
+
+    // child-1 finishes first; assistant acknowledges while child-2 is still pending.
+    messages.push({
+      id: 'syn-1',
+      metadata: { childID: 'child-1', source: 'subagent', state: 'completed' },
+      text: '<subagent sessionID="child-1" state="completed">',
+      type: 'synthetic',
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(waitCount).toBe(2);
+
+    messages.push(
+      {
+        content: [{ text: 'First done, waiting on second.', type: 'text' }],
+        id: 'assistant-2',
+        type: 'assistant',
+      },
+      { id: 'idle-2', type: 'idle' },
+    );
+    releaseWait?.();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(statuses).toEqual(['Waiting for subagents...', 'Waiting for subagent...']);
+
+    // child-2 finishes; assistant sends a follow-up to child-1 (re-using sessionID).
+    messages.push({
+      id: 'syn-2',
+      metadata: { childID: 'child-2', source: 'subagent', state: 'completed' },
+      text: '<subagent sessionID="child-2" state="completed">',
+      type: 'synthetic',
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(waitCount).toBe(3);
+
+    messages.push(
+      {
+        content: [
+          {
+            id: 'call-sub-1-followup',
+            name: 'subagent',
+            state: {
+              input: { agent: 'explore', prompt: 'follow up', sessionID: 'child-1' },
+              metadata: { sessionID: 'child-1', status: 'running' },
+              status: 'completed',
+            },
+            type: 'tool',
+          },
+        ],
+        id: 'assistant-3',
+        type: 'assistant',
+      },
+      { id: 'idle-3', type: 'idle' },
+    );
+    releaseWait?.();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(statuses).toEqual([
+      'Waiting for subagents...',
+      'Waiting for subagent...',
+      'Waiting for subagent...',
+    ]);
+
+    // Follow-up to child-1 completes; assistant writes final answer.
+    messages.push({
+      id: 'syn-1-followup',
+      metadata: { childID: 'child-1', source: 'subagent', state: 'completed' },
+      text: '<subagent sessionID="child-1" state="completed">',
+      type: 'synthetic',
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(waitCount).toBe(4);
+
+    messages.push(
+      {
+        content: [{ text: 'All subagents complete.', type: 'text' }],
+        id: 'assistant-4',
+        type: 'assistant',
+      },
+      { id: 'idle-4', type: 'idle' },
+    );
+    releaseWait?.();
+
+    await expect(turn).resolves.toBe('All subagents complete.');
+  });
 });

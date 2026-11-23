@@ -74,7 +74,10 @@ export const runSessionTurn = async ({
       }
     : undefined;
   const canStreamEvents = Boolean(emitChunk && typeof client.event?.subscribe === 'function');
-  const streamController = { flush: () => {} };
+  const streamController: StreamController = {
+    flush: () => {},
+    setWaiting: () => {},
+  };
   const eventMonitor =
     canStreamEvents && emitChunk
       ? streamSessionEvents({
@@ -99,32 +102,35 @@ export const runSessionTurn = async ({
       ...(files?.length ? { files } : {}),
     });
 
-    const handledSubagents = new Set<string>();
-    do {
+    for (;;) {
+      streamController.setWaiting(false);
       await waitForSession(client, sessionID, signal);
       if (signal?.aborted) throw new TurnAbortedError();
 
       newMessages = await newSessionMessages(client, sessionID, previousAssistantIDs);
-      let subagents = backgroundSubagentIDs(newMessages);
-      while (subagents.some((id) => !handledSubagents.has(id))) {
-        const current = subagents.filter((id) => !handledSubagents.has(id));
+      const pending = pendingBackgroundTasks(newMessages);
+      if (pending.length > 0) {
+        const knownAssistantIDs = new Set(
+          newMessages.filter((item) => item.type === 'assistant').map((item) => item.id),
+        );
         streamController.flush();
-        onStatus?.('Waiting for subagent...');
-        let completed = completedSubagentIDs(newMessages);
-        while (current.some((id) => !completed.has(id))) {
-          if (signal?.aborted) throw new TurnAbortedError();
-          await sleep(1000, signal);
-          if (signal?.aborted) throw new TurnAbortedError();
-          newMessages = await newSessionMessages(client, sessionID, previousAssistantIDs);
-          completed = completedSubagentIDs(newMessages);
-        }
-        for (const id of current) handledSubagents.add(id);
-        await waitForSession(client, sessionID, signal);
-        if (signal?.aborted) throw new TurnAbortedError();
-        newMessages = await newSessionMessages(client, sessionID, previousAssistantIDs);
-        subagents = backgroundSubagentIDs(newMessages);
+        streamController.setWaiting(true, knownAssistantIDs);
+        onStatus?.(backgroundWaitStatus(pending));
+        await waitForSessionResume({
+          client,
+          lastMessageCount: newMessages.length,
+          lastMessageID: newMessages.at(-1)?.id,
+          pendingKeys: new Set(pending.map((task) => task.key)),
+          previousAssistantIDs,
+          sessionID,
+          signal,
+        });
+        continue;
       }
-    } while (!signal?.aborted && (await shouldContinueWaiting?.()));
+
+      if (signal?.aborted) throw new TurnAbortedError();
+      if (!(await shouldContinueWaiting?.())) break;
+    }
   } finally {
     signal?.removeEventListener('abort', onAbort);
     eventAbort.abort();
@@ -167,9 +173,14 @@ const interruptSession = async (client: OpenCodeClient, sessionID: string) => {
   }
 };
 
+type StreamController = {
+  flush: () => void;
+  setWaiting: (waiting: boolean, knownAssistantIDs?: Set<string>) => void;
+};
+
 type StreamSessionEventsOptions = {
   client: OpenCodeClient;
-  controller: { flush: () => void };
+  controller: StreamController;
   onChunk: (chunk: StreamChunk) => void;
   onMessageEnd?: () => void;
   onStatus?: (status: string) => void;
@@ -196,6 +207,8 @@ const streamSessionEvents = async ({
   let activeTextKey: string | undefined;
   let emittedAnyText = false;
   let lastTextEndedWithNewlines = false;
+  let waitingForBackground = false;
+  let waitedAssistantIDs = new Set<string>();
 
   const finishCurrentMessage = () => {
     if (!onMessageEnd || !activeAssistantID) return;
@@ -206,6 +219,13 @@ const streamSessionEvents = async ({
     onMessageEnd();
   };
   controller.flush = finishCurrentMessage;
+  controller.setWaiting = (waiting, knownAssistantIDs) => {
+    waitingForBackground = waiting;
+    waitedAssistantIDs = waiting && knownAssistantIDs ? new Set(knownAssistantIDs) : new Set();
+  };
+
+  const isNewAssistantEvent = (assistantMessageID: string) =>
+    !waitedAssistantIDs.has(assistantMessageID);
 
   const emitDelta = (assistantMessageID: string, ordinal: number, delta: string) => {
     if (!delta) return;
@@ -236,12 +256,18 @@ const streamSessionEvents = async ({
 
         if (event.type === 'session.text.delta') {
           if (previousAssistantIDs.has(event.data.assistantMessageID)) continue;
+          if (waitingForBackground && isNewAssistantEvent(event.data.assistantMessageID)) {
+            waitingForBackground = false;
+          }
           emitDelta(event.data.assistantMessageID, event.data.ordinal, event.data.delta);
         } else if (event.type === 'session.text.ended') {
           if (previousAssistantIDs.has(event.data.assistantMessageID)) continue;
           const key = `${event.data.assistantMessageID}:${event.data.ordinal}`;
           const already = streamedTextByPart.get(key) ?? '';
           if (event.data.text.startsWith(already) && event.data.text.length > already.length) {
+            if (waitingForBackground && isNewAssistantEvent(event.data.assistantMessageID)) {
+              waitingForBackground = false;
+            }
             emitDelta(
               event.data.assistantMessageID,
               event.data.ordinal,
@@ -250,7 +276,13 @@ const streamSessionEvents = async ({
           }
         } else if (event.type === 'session.step.started') {
           if (previousAssistantIDs.has(event.data.assistantMessageID)) continue;
-          if (activeAssistantID && activeAssistantID !== event.data.assistantMessageID) {
+          const resuming =
+            waitingForBackground && isNewAssistantEvent(event.data.assistantMessageID);
+          if (
+            resuming ||
+            (activeAssistantID && activeAssistantID !== event.data.assistantMessageID)
+          ) {
+            waitingForBackground = false;
             finishCurrentMessage();
             onStatus?.('Thinking...');
           }
@@ -262,18 +294,28 @@ const streamSessionEvents = async ({
         } else if (event.type === 'session.reasoning.started') {
           if (previousAssistantIDs.has(event.data.assistantMessageID)) continue;
           if (activeAssistantID === event.data.assistantMessageID) continue;
+          if (waitingForBackground && !isNewAssistantEvent(event.data.assistantMessageID)) continue;
+          waitingForBackground = false;
           finishCurrentMessage();
           onStatus?.('Thinking...');
         } else if (event.type === 'session.tool.input.started') {
           if (previousAssistantIDs.has(event.data.assistantMessageID)) continue;
+          if (waitingForBackground && !isNewAssistantEvent(event.data.assistantMessageID)) continue;
+          waitingForBackground = false;
           finishCurrentMessage();
           toolNames.set(event.data.id, event.data.name);
           onStatus?.(`${formatToolTitle(event.data.name)}...`);
         } else if (event.type === 'session.tool.called') {
           if (previousAssistantIDs.has(event.data.assistantMessageID)) continue;
+          if (waitingForBackground && !isNewAssistantEvent(event.data.assistantMessageID)) continue;
+          waitingForBackground = false;
           finishCurrentMessage();
           const name = toolNames.get(event.data.id) ?? 'tool';
           onStatus?.(`${describeToolCall(name, event.data.input)}...`);
+        } else if (event.type === 'session.idle') {
+          if (waitingForBackground) {
+            finishCurrentMessage();
+          }
         }
       }
       return;
@@ -404,29 +446,137 @@ const newSessionMessages = async (
   return messages.reverse();
 };
 
-const completedSubagentIDs = (messages: SessionMessageInfo[]) =>
-  new Set(
-    messages
-      .filter((item) => item.type === 'synthetic' && item.metadata?.source === 'subagent')
-      .map((item) => item.metadata?.childID)
-      .filter((id): id is string => typeof id === 'string'),
-  );
+type BackgroundTaskKind = 'job' | 'shell' | 'subagent';
 
-const backgroundSubagentIDs = (messages: SessionMessageInfo[]) => {
-  const ids: string[] = [];
+type BackgroundTask = {
+  id: string;
+  key: string;
+  kind: BackgroundTaskKind;
+};
+
+const pendingBackgroundTasks = (messages: SessionMessageInfo[]) => {
+  const pending = new Map<string, BackgroundTask>();
 
   for (const message of messages) {
-    if (message.type !== 'assistant') continue;
-    for (const part of message.content) {
-      if (part.type !== 'tool' || part.name !== 'subagent' || part.state.status !== 'completed')
-        continue;
-      if (part.state.input.background !== true) continue;
-      const childID = part.state.metadata?.sessionID;
-      if (typeof childID === 'string') ids.push(childID);
+    if (message.type === 'assistant') {
+      for (const part of message.content) {
+        if (part.type !== 'tool' || part.state.status !== 'completed') continue;
+
+        if (part.name === 'subagent') {
+          const childID = part.state.metadata?.sessionID;
+          const isBackground =
+            part.state.metadata?.status === 'running' || part.state.input.background === true;
+          if (isBackground && typeof childID === 'string') {
+            const key = `subagent:${childID}`;
+            pending.set(key, { id: childID, key, kind: 'subagent' });
+          }
+          continue;
+        }
+
+        if (part.name === 'shell' || part.name === 'bash') {
+          const shellID = part.state.metadata?.shellID;
+          const isBackground =
+            part.state.metadata?.status === 'running' || part.state.input.background === true;
+          if (isBackground && typeof shellID === 'string') {
+            const key = `shell:${shellID}`;
+            pending.set(key, { id: shellID, key, kind: 'shell' });
+          }
+          continue;
+        }
+
+        const jobID = part.state.metadata?.jobID;
+        if (part.state.metadata?.status === 'running' && typeof jobID === 'string') {
+          const key = `job:${jobID}`;
+          pending.set(key, { id: jobID, key, kind: 'job' });
+        }
+      }
+      continue;
+    }
+
+    if (message.type !== 'synthetic') continue;
+
+    const source = message.metadata?.source;
+    if (source === 'subagent') {
+      const childID = message.metadata?.childID;
+      if (typeof childID === 'string') {
+        pending.delete(`subagent:${childID}`);
+      }
+    } else if (source === 'shell') {
+      const shellID =
+        typeof message.metadata?.shellID === 'string'
+          ? message.metadata.shellID
+          : typeof message.metadata?.jobID === 'string'
+            ? message.metadata.jobID
+            : undefined;
+      if (shellID) {
+        pending.delete(`shell:${shellID}`);
+      }
+    }
+    const jobID = message.metadata?.jobID;
+    if (typeof jobID === 'string') {
+      pending.delete(`job:${jobID}`);
     }
   }
 
-  return ids;
+  return [...pending.values()];
+};
+
+const backgroundWaitStatus = (pending: readonly BackgroundTask[]) => {
+  const kinds = new Set(pending.map((task) => task.kind));
+  if (kinds.size === 1) {
+    if (kinds.has('subagent')) {
+      return pending.length === 1 ? 'Waiting for subagent...' : 'Waiting for subagents...';
+    }
+    if (kinds.has('shell')) {
+      return pending.length === 1
+        ? 'Waiting for background command...'
+        : 'Waiting for background commands...';
+    }
+  }
+  return pending.length === 1
+    ? 'Waiting for background task...'
+    : 'Waiting for background tasks...';
+};
+
+type WaitForSessionResumeOptions = {
+  client: OpenCodeClient;
+  lastMessageCount: number;
+  lastMessageID?: string;
+  pendingKeys: Set<string>;
+  previousAssistantIDs: Set<string>;
+  sessionID: string;
+  signal?: AbortSignal;
+};
+
+const waitForSessionResume = async ({
+  client,
+  lastMessageCount,
+  lastMessageID,
+  pendingKeys,
+  previousAssistantIDs,
+  sessionID,
+  signal,
+}: WaitForSessionResumeOptions) => {
+  for (;;) {
+    if (signal?.aborted) throw new TurnAbortedError();
+    await sleep(1000, signal);
+    if (signal?.aborted) throw new TurnAbortedError();
+    try {
+      const latest = await newSessionMessages(client, sessionID, previousAssistantIDs);
+      const latestPending = new Set(pendingBackgroundTasks(latest).map((task) => task.key));
+      if (
+        latest.length !== lastMessageCount ||
+        latest.at(-1)?.id !== lastMessageID ||
+        [...pendingKeys].some((key) => !latestPending.has(key))
+      ) {
+        return;
+      }
+    } catch (error) {
+      if (signal?.aborted) throw new TurnAbortedError();
+      if (!(error instanceof Error)) throw error;
+      console.warn(`OpenCode background check failed for ${sessionID}; retrying`, error);
+    }
+  }
 };
 
 const waitForSession = async (client: OpenCodeClient, sessionID: string, signal?: AbortSignal) => {

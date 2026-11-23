@@ -1211,4 +1211,183 @@ describe('Slack agent', () => {
     await vi.advanceTimersByTimeAsync(180_000);
     expect(adapter.typingStatuses.length).toBe(finalStatusCount);
   });
+
+  it('keeps working status alive and posts follow-up messages across background shell waits', async () => {
+    vi.useFakeTimers();
+    const pendingEvents: unknown[] = [];
+    let notifyEvent: (() => void) | undefined;
+    let eventsDone = false;
+    const pushEvent = (event: unknown) => {
+      pendingEvents.push(event);
+      notifyEvent?.();
+      notifyEvent = undefined;
+    };
+
+    const messages: unknown[] = [];
+    let waitCount = 0;
+    let releaseWait: (() => void) | undefined;
+    let firstWaitReady = () => {};
+    const firstWaitStarted = new Promise<void>((resolve) => {
+      firstWaitReady = resolve;
+    });
+
+    const client = {
+      event: {
+        subscribe: vi.fn(async function* () {
+          while (!eventsDone || pendingEvents.length > 0) {
+            if (pendingEvents.length === 0) {
+              await new Promise<void>((resolve) => {
+                notifyEvent = resolve;
+              });
+              continue;
+            }
+            yield pendingEvents.shift();
+          }
+        }),
+      },
+      generate: { text: vi.fn(async () => ({ text: 'PR babysit' })) },
+      message: {
+        list: vi.fn(async () => ({ cursor: {}, data: [...messages].reverse() })),
+      },
+      permission: { list: vi.fn(async () => []), reply: vi.fn(async () => {}) },
+      session: {
+        create: vi.fn(async () => ({ id: 'session-babysit' })),
+        list: vi.fn(async () => ({ cursor: {}, data: [] })),
+        prompt: vi.fn(async (input: { metadata?: Record<string, unknown> }) => {
+          messages.push({ id: 'user-1', metadata: input.metadata, type: 'user' });
+        }),
+        update: vi.fn(async () => {}),
+        wait: vi.fn(async () => {
+          waitCount += 1;
+          if (waitCount === 1) firstWaitReady();
+          await new Promise<void>((resolve) => {
+            releaseWait = resolve;
+          });
+        }),
+      },
+    } as unknown as OpenCodeClient;
+
+    const adapter = new MockAdapter('remotecode');
+    const bot = createAgent({
+      adapters: { mock: adapter },
+      allowedUsers: ['local-user'],
+      config: {
+        agent: 'build',
+        model: { id: 'model', providerID: 'provider', variant: 'high' },
+        reposRoot: '/tmp',
+        smallModel: { id: 'small-model', providerID: 'provider' },
+        workspaceRoot: '/tmp/workspaces',
+      },
+      openCode: client,
+      state: createMemoryState(),
+      userName: 'remotecode',
+      ...staticWorkspace,
+    });
+    bots.push(bot);
+    await bot.initialize();
+
+    const turnPromise = adapter.receive('babysit', 'tira una PR y babysitteala');
+    await firstWaitStarted;
+
+    // Agent opens draft PR, starts background watcher shell, and session goes idle.
+    messages.push(
+      {
+        content: [
+          {
+            id: 'call-watch-1',
+            name: 'shell',
+            state: {
+              input: { background: true, command: 'python3 watch.py' },
+              metadata: { pid: 2902881, shellID: 'sh-watch-1', status: 'running' },
+              status: 'completed',
+            },
+            type: 'tool',
+          },
+        ],
+        id: 'assistant-1a',
+        type: 'assistant',
+      },
+      {
+        content: [
+          { text: 'PR abierta en draft: https://github.com/org/repo/pull/1', type: 'text' },
+        ],
+        id: 'assistant-1b',
+        type: 'assistant',
+      },
+      { id: 'idle-1', type: 'idle' },
+    );
+    pushEvent({
+      data: {
+        assistantMessageID: 'assistant-1b',
+        delta: 'PR abierta en draft: https://github.com/org/repo/pull/1',
+        ordinal: 0,
+        sessionID: 'session-babysit',
+      },
+      type: 'session.text.delta',
+    });
+    releaseWait?.();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(adapter.outputs).toEqual(['PR abierta en draft: https://github.com/org/repo/pull/1']);
+    expect(adapter.typingStatuses.at(-1)).toBe('Waiting for background command...');
+
+    // Keepalive refreshes the waiting status while the background shell runs.
+    const beforeKeepalive = adapter.typingStatuses.length;
+    await vi.advanceTimersByTimeAsync(90_000);
+    expect(adapter.typingStatuses.length).toBeGreaterThan(beforeKeepalive);
+    expect(adapter.typingStatuses.at(-1)).toBe('Waiting for background command...');
+
+    // Background shell completes; agent resumes and posts final ready message.
+    messages.push({
+      id: 'syn-watch-1',
+      metadata: {
+        exit: 0,
+        jobID: 'sh-watch-1',
+        shellID: 'sh-watch-1',
+        source: 'shell',
+        state: 'completed',
+      },
+      text: '<shell id="sh-watch-1" state="completed">',
+      type: 'synthetic',
+    });
+    pushEvent({
+      data: {
+        assistantMessageID: 'assistant-2',
+        sessionID: 'session-babysit',
+      },
+      type: 'session.step.started',
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(waitCount).toBe(2);
+    expect(adapter.typingStatuses.at(-1)).toBe('Thinking...');
+
+    messages.push(
+      {
+        content: [{ text: 'Lista para review humano.', type: 'text' }],
+        id: 'assistant-2',
+        type: 'assistant',
+      },
+      { id: 'idle-2', type: 'idle' },
+    );
+    pushEvent({
+      data: {
+        assistantMessageID: 'assistant-2',
+        delta: 'Lista para review humano.',
+        ordinal: 0,
+        sessionID: 'session-babysit',
+      },
+      type: 'session.text.delta',
+    });
+    eventsDone = true;
+    notifyEvent?.();
+    releaseWait?.();
+    await turnPromise;
+
+    expect(adapter.outputs).toEqual([
+      'PR abierta en draft: https://github.com/org/repo/pull/1',
+      'Lista para review humano.',
+    ]);
+    expect(adapter.endTypingCount).toBe(0);
+    expect(adapter.reactions).toEqual([]);
+  });
 });
