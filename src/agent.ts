@@ -160,7 +160,17 @@ export const createAgent = (options: CreateAgentOptions) => {
 
   const handleMessage = async (thread: Thread<ThreadState>, message: Message) => {
     if (!options.allowedUsers.includes(message.author.userId)) return;
-    if (!(thread.isDM || message.isMention || (await shouldRespond(thread, message)))) return;
+    const activeTurn = activeTurns.get(thread.id);
+    const assistantRunning = Boolean(activeTurn && !activeTurn.closing);
+    if (
+      !(
+        thread.isDM ||
+        message.isMention ||
+        (await shouldRespond(thread, message, { assistantRunning }))
+      )
+    ) {
+      return;
+    }
 
     for (;;) {
       const existing = activeTurns.get(thread.id);

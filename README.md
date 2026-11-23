@@ -121,8 +121,8 @@ from OpenCode prompt metadata.
 
 In channels, a mention subscribes the app to the thread. Mentions always trigger the agent;
 untagged replies from allowed users are evaluated by `DECISION_MODEL` (default
-`~typesafe/jev-latest`) through OpenRouter using AI SDK's `experimental_evaluate`. The gate uses up to 20 recent messages, including the
-assistant's replies. It separately evaluates whether a response/action is needed, whether the bot
+`~typesafe/jev-latest`) through OpenRouter using AI SDK's `experimental_evaluate`. The gate uses up to 20 recent messages (including the
+assistant's replies) and whether the assistant currently has an active turn in the thread. It separately evaluates whether a response/action is needed, whether the bot
 is addressed, whether its task is being continued, and whether someone else is the exclusive
 recipient. It requires the first and either the second or third (each at probability ≥ 0.7),
 and skips replies when the exclusive-other-recipient probability is ≥ 0.7. Evaluation errors or timeouts

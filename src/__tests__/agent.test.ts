@@ -13,6 +13,7 @@ afterEach(async () => {
   vi.useRealTimers();
   await Promise.all(bots.splice(0).map((bot) => bot.shutdown()));
   vi.restoreAllMocks();
+  vi.mocked(shouldRespond).mockReset();
 });
 
 const staticWorkspace = {
@@ -100,6 +101,11 @@ describe('Slack agent', () => {
       expect(prompts).toHaveLength(0);
       await adapter.receive('one', 'first request');
       await adapter.receive('one', 'new context', false);
+      expect(shouldRespond).toHaveBeenLastCalledWith(
+        expect.anything(),
+        expect.objectContaining({ text: 'new context' }),
+        { assistantRunning: false },
+      );
       expect(prompts).toHaveLength(smart ? 2 : 1);
       await adapter.receive('one', 'second request');
       await adapter.receive('other', 'unrelated channel thread', false);
@@ -698,9 +704,23 @@ describe('Slack agent', () => {
 
     const firstTurn = adapter.receive('steer', 'refactor auth to JWT');
     await firstPromptReady;
-    await adapter.receive('steer', 'actually use cookies instead');
+    vi.mocked(shouldRespond).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    await adapter.receive('steer', 'fyi bob, taking a look too', false);
+    await adapter.receive('steer', 'actually use cookies instead', false);
     await firstTurn;
 
+    expect(shouldRespond).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      expect.objectContaining({ text: 'fyi bob, taking a look too' }),
+      { assistantRunning: true },
+    );
+    expect(shouldRespond).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      expect.objectContaining({ text: 'actually use cookies instead' }),
+      { assistantRunning: true },
+    );
     expect(promptCalls).toHaveLength(2);
     expect(promptCalls[0]?.delivery).toBeUndefined();
     expect(promptCalls[0]?.text).toContain('refactor auth to JWT');

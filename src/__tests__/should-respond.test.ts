@@ -131,6 +131,22 @@ describe('shouldRespond', () => {
     });
   });
 
+  it('includes whether the assistant is currently running in evaluation state', async () => {
+    mockProbabilities();
+
+    await shouldRespond(thread([]), message('idle', 'Still waiting?'));
+    expect(vi.mocked(evaluate).mock.calls[0]?.[0].state).toMatchObject({
+      assistantRunning: false,
+    });
+
+    await shouldRespond(thread([]), message('steer', 'Also update docs'), {
+      assistantRunning: true,
+    });
+    expect(vi.mocked(evaluate).mock.calls[1]?.[0].state).toMatchObject({
+      assistantRunning: true,
+    });
+  });
+
   it('uses the configured decision model', async () => {
     mockProbabilities();
     env.DECISION_MODEL = 'd1.2-ultra';
