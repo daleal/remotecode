@@ -551,9 +551,14 @@ describe('Slack agent', () => {
       },
     ];
     let prompted = false;
+    let releasePrompt = () => {};
+    const promptReady = new Promise<void>((resolve) => {
+      releasePrompt = resolve;
+    });
     const client = {
       event: {
         subscribe: vi.fn(async function* () {
+          await promptReady;
           for (const event of events) yield event;
           releaseWait();
         }),
@@ -579,6 +584,7 @@ describe('Slack agent', () => {
         list: vi.fn(async () => ({ cursor: {}, data: [] })),
         prompt: vi.fn(async () => {
           prompted = true;
+          releasePrompt();
         }),
         update: vi.fn(async () => {}),
         wait: vi.fn(() => waitPromise),
@@ -1411,5 +1417,376 @@ describe('Slack agent', () => {
     ]);
     expect(adapter.endTypingCount).toBe(0);
     expect(adapter.reactions).toEqual([]);
+  });
+
+  it('streams follow-up turns triggered by OpenCode automations after the initial turn ends', async () => {
+    const pendingEvents: unknown[] = [];
+    let notifyEvent: (() => void) | undefined;
+    let eventsDone = false;
+    const pushEvent = (event: unknown) => {
+      pendingEvents.push(event);
+      notifyEvent?.();
+      notifyEvent = undefined;
+    };
+
+    const messages: unknown[] = [];
+    let waitCount = 0;
+    const waitResolvers: Array<() => void> = [];
+    let waitStarted: (() => void) | undefined;
+    const nextWait = () =>
+      new Promise<void>((resolve) => {
+        waitStarted = resolve;
+      });
+    const releaseWait = () => {
+      waitResolvers.shift()?.();
+    };
+
+    const client = {
+      event: {
+        subscribe: vi.fn(async function* () {
+          while (!eventsDone || pendingEvents.length > 0) {
+            if (pendingEvents.length === 0) {
+              await new Promise<void>((resolve) => {
+                notifyEvent = resolve;
+              });
+              continue;
+            }
+            yield pendingEvents.shift();
+          }
+        }),
+      },
+      experimental: { generate: { text: vi.fn(async () => ({ text: 'Scheduled timers' })) } },
+      message: {
+        list: vi.fn(async () => ({ cursor: {}, data: [...messages].reverse() })),
+      },
+      permission: { list: vi.fn(async () => []), reply: vi.fn(async () => {}) },
+      session: {
+        create: vi.fn(async () => ({ id: 'session-timers' })),
+        list: vi.fn(async () => ({ cursor: {}, data: [] })),
+        prompt: vi.fn(async (input: { metadata?: Record<string, unknown> }) => {
+          messages.push({ id: `user-${messages.length}`, metadata: input.metadata, type: 'user' });
+        }),
+        update: vi.fn(async () => {}),
+        wait: vi.fn(async () => {
+          waitCount += 1;
+          waitStarted?.();
+          waitStarted = undefined;
+          await new Promise<void>((resolve) => {
+            waitResolvers.push(resolve);
+          });
+        }),
+      },
+    } as unknown as OpenCodeClient;
+
+    const adapter = new MockAdapter('remotecode');
+    const bot = createAgent({
+      adapters: { mock: adapter },
+      allowedUsers: ['local-user'],
+      config: {
+        agent: 'build',
+        model: { id: 'model', providerID: 'provider', variant: 'high' },
+        reposRoot: '/tmp',
+        smallModel: { id: 'small-model', providerID: 'provider' },
+        workspaceRoot: '/tmp/workspaces',
+      },
+      openCode: client,
+      state: createMemoryState(),
+      userName: 'remotecode',
+      ...staticWorkspace,
+    });
+    bots.push(bot);
+    await bot.initialize();
+
+    // Initial user turn creates automations and finishes.
+    const wait1 = nextWait();
+    const initialTurn = adapter.receive('timers', 'manda 2 mensajes cada 5s');
+    await wait1;
+    messages.push(
+      {
+        content: [{ text: 'De una, dejé programados 2 mensajes.', type: 'text' }],
+        id: 'assistant-initial',
+        type: 'assistant',
+      },
+      { id: 'idle-initial', type: 'idle' },
+    );
+    pushEvent({
+      data: {
+        assistantMessageID: 'assistant-initial',
+        delta: 'De una, dejé programados 2 mensajes.',
+        ordinal: 0,
+        sessionID: 'session-timers',
+      },
+      type: 'session.text.delta',
+    });
+    await Promise.resolve();
+    releaseWait();
+    await initialTurn;
+
+    expect(adapter.outputs).toEqual(['De una, dejé programados 2 mensajes.']);
+
+    // Automation 1/2 fires after the initial turn ended.
+    const wait2 = nextWait();
+    const statusesBeforeAut1 = adapter.typingStatuses.length;
+    messages.push({
+      id: 'msg_aut_1',
+      metadata: { automation: { id: 'aut_1', name: 'Mensaje 1/2', run: 1 } },
+      text: 'Timer 1/2 cumplido',
+      type: 'user',
+    });
+    pushEvent({
+      data: {
+        inboxID: 'msg_aut_1',
+        item: {
+          delivery: 'queue',
+          payload: {
+            metadata: { automation: { id: 'aut_1', name: 'Mensaje 1/2', run: 1 } },
+            text: 'Timer 1/2 cumplido',
+          },
+          type: 'user',
+        },
+        sessionID: 'session-timers',
+      },
+      type: 'session.inbox.enqueued',
+    });
+    await wait2;
+    expect(adapter.typingStatuses.slice(statusesBeforeAut1)).toContain('Thinking...');
+
+    messages.push(
+      {
+        content: [{ text: 'Mensaje 1/2!', type: 'text' }],
+        id: 'assistant-aut-1',
+        type: 'assistant',
+      },
+      { id: 'idle-aut-1', type: 'idle' },
+    );
+    pushEvent({
+      data: {
+        assistantMessageID: 'assistant-aut-1',
+        delta: 'Mensaje 1/2!',
+        ordinal: 0,
+        sessionID: 'session-timers',
+      },
+      type: 'session.text.delta',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    releaseWait();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(adapter.outputs).toEqual(['De una, dejé programados 2 mensajes.', 'Mensaje 1/2!']);
+
+    // Automation 2/2 fires and user steers it mid-flight.
+    const wait3 = nextWait();
+    messages.push({
+      id: 'msg_aut_2',
+      metadata: { automation: { id: 'aut_2', name: 'Mensaje 2/2', run: 1 } },
+      text: 'Timer 2/2 cumplido',
+      type: 'user',
+    });
+    pushEvent({
+      data: {
+        inboxID: 'msg_aut_2',
+        item: {
+          delivery: 'queue',
+          payload: {
+            metadata: { automation: { id: 'aut_2', name: 'Mensaje 2/2', run: 1 } },
+            text: 'Timer 2/2 cumplido',
+          },
+          type: 'user',
+        },
+        sessionID: 'session-timers',
+      },
+      type: 'session.inbox.enqueued',
+    });
+    await wait3;
+
+    await adapter.receive('timers', 'agrega un emoji');
+    expect(client.session.prompt).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        delivery: 'steer',
+        sessionID: 'session-timers',
+        text: expect.stringContaining('agrega un emoji'),
+      }),
+    );
+
+    const wait4 = nextWait();
+    releaseWait();
+    await wait4;
+
+    messages.push(
+      {
+        content: [{ text: 'Mensaje 2/2! 🎉', type: 'text' }],
+        id: 'assistant-aut-2',
+        type: 'assistant',
+      },
+      { id: 'idle-aut-2', type: 'idle' },
+    );
+    pushEvent({
+      data: {
+        assistantMessageID: 'assistant-aut-2',
+        delta: 'Mensaje 2/2! 🎉',
+        ordinal: 0,
+        sessionID: 'session-timers',
+      },
+      type: 'session.text.delta',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    eventsDone = true;
+    notifyEvent?.();
+    releaseWait();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(waitCount).toBe(4);
+    expect(adapter.outputs).toEqual([
+      'De una, dejé programados 2 mensajes.',
+      'Mensaje 1/2!',
+      'Mensaje 2/2! 🎉',
+    ]);
+  });
+
+  it('recovers and relays post-restart automation replies on reconnect while ignoring manual local prompts', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let subscribeAttempts = 0;
+    let releaseRestartWait = () => {};
+    let restartWaitStarted = () => {};
+    const restartWaitReady = new Promise<void>((resolve) => {
+      restartWaitStarted = resolve;
+    });
+
+    const restartMessages: unknown[] = [
+      {
+        content: [{ text: 'De una, dejé programados 4 mensajes.', type: 'text' }],
+        id: 'asst-before',
+        type: 'assistant',
+      },
+      { id: 'idle-before', type: 'idle' },
+      {
+        id: 'msg_aut_1',
+        metadata: { automation: { id: 'aut_1', name: 'Mensaje 1/4', run: 1 } },
+        text: 'Timer 1/4',
+        type: 'user',
+      },
+      {
+        id: 'syn-restart',
+        metadata: { notice: 'restart' },
+        text: 'The server restarted while you were working.',
+        type: 'synthetic',
+      },
+      {
+        id: 'msg_aut_2',
+        metadata: { automation: { id: 'aut_2', name: 'Mensaje 2/4', run: 1 } },
+        text: 'Timer 2/4',
+        type: 'user',
+      },
+      {
+        content: [
+          { text: 'Chuta, el server se reinició justo mientras corrían los timers.', type: 'text' },
+        ],
+        id: 'asst-after-restart',
+        type: 'assistant',
+      },
+    ];
+    const manualMessages: unknown[] = [
+      { content: [{ text: 'Old Slack reply', type: 'text' }], id: 'asst-old', type: 'assistant' },
+      { id: 'user-local-cli', text: 'local terminal command', type: 'user' },
+      {
+        content: [{ text: 'Local reply only', type: 'text' }],
+        id: 'asst-local',
+        type: 'assistant',
+      },
+    ];
+
+    const client = {
+      event: {
+        subscribe: vi.fn(async function* ({ signal }: { signal?: AbortSignal } = {}) {
+          subscribeAttempts += 1;
+          yield { data: {}, type: 'server.connected' };
+          if (subscribeAttempts === 1) {
+            // Simulate clean SSE EOF when OpenCode restarts cleanly on SIGTERM.
+            return;
+          }
+          await new Promise<void>((resolve) => {
+            signal?.addEventListener('abort', () => resolve(), { once: true });
+          });
+        }),
+      },
+      message: {
+        list: vi.fn(async ({ sessionID }: { sessionID: string }) => ({
+          cursor: {},
+          data:
+            sessionID === 'ses-restarted'
+              ? [...restartMessages].reverse()
+              : [...manualMessages].reverse(),
+        })),
+      },
+      permission: { list: vi.fn(async () => []), reply: vi.fn(async () => {}) },
+      session: {
+        active: vi.fn(async () =>
+          subscribeAttempts >= 2
+            ? {
+                'ses-local-cli': { type: 'running' },
+                'ses-restarted': { type: 'running' },
+                'ses-unrelated': { type: 'running' },
+              }
+            : {},
+        ),
+        get: vi.fn(async ({ sessionID }: { sessionID: string }) => {
+          if (sessionID === 'ses-restarted') {
+            return { id: sessionID, metadata: { threadID: 'mock:local:restarted' } };
+          }
+          if (sessionID === 'ses-local-cli') {
+            return { id: sessionID, metadata: { threadID: 'mock:local:manual' } };
+          }
+          return { id: sessionID, metadata: {} };
+        }),
+        list: vi.fn(async () => ({ cursor: {}, data: [] })),
+        wait: vi.fn(async ({ sessionID }: { sessionID: string }) => {
+          if (sessionID === 'ses-restarted') {
+            restartWaitStarted();
+            await new Promise<void>((resolve) => {
+              releaseRestartWait = resolve;
+            });
+          }
+        }),
+      },
+    } as unknown as OpenCodeClient;
+
+    const adapter = new MockAdapter('remotecode');
+    const state = createMemoryState();
+    const bot = createAgent({
+      adapters: { mock: adapter },
+      allowedUsers: ['local-user'],
+      config: {
+        agent: 'build',
+        model: { id: 'model', providerID: 'provider', variant: 'high' },
+        reposRoot: '/tmp',
+        smallModel: { id: 'small-model', providerID: 'provider' },
+        workspaceRoot: '/tmp/workspaces',
+      },
+      openCode: client,
+      state,
+      userName: 'remotecode',
+      ...staticWorkspace,
+    });
+    bots.push(bot);
+    await bot.initialize();
+
+    // First stream ends cleanly (graceful SIGTERM) -> hub reconnects after 1000ms.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(subscribeAttempts).toBe(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    await restartWaitReady;
+
+    expect(subscribeAttempts).toBe(2);
+    expect(adapter.typingStatuses).toContain('Thinking...');
+
+    releaseRestartWait();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(adapter.outputs).toEqual([
+      'Chuta, el server se reinició justo mientras corrían los timers.',
+    ]);
+    await expect(state.isSubscribed('mock:local:restarted')).resolves.toBe(true);
+    expect(warn).toHaveBeenCalledWith('OpenCode event stream closed; reconnecting');
   });
 });

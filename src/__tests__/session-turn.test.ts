@@ -1,7 +1,12 @@
 import type { OpenCodeClient } from '@opencode/client';
 import type { StreamChunk } from 'chat';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { runSessionTurn, TurnAbortedError } from '../session-turn';
+import {
+  inspectAutonomousTurn,
+  observeSessionTurn,
+  runSessionTurn,
+  TurnAbortedError,
+} from '../session-turn';
 
 const metadata = {
   lastMessageID: 'thread-message-1',
@@ -1034,5 +1039,243 @@ describe('runSessionTurn', () => {
     releaseWait?.();
 
     await expect(turn).resolves.toBe('All subagents complete.');
+  });
+
+  it('reconnects when a live OpenCode event stream closes cleanly after server.connected', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const chunks: StreamChunk[] = [];
+    let attempt = 0;
+    let releaseWait = () => {};
+    const waitPromise = new Promise<void>((resolve) => {
+      releaseWait = resolve;
+    });
+
+    const client = {
+      event: {
+        subscribe: vi.fn(async function* ({ signal }: { signal?: AbortSignal } = {}) {
+          attempt += 1;
+          yield { data: {}, type: 'server.connected' };
+          if (attempt === 1) {
+            yield {
+              data: {
+                assistantMessageID: 'assistant-1',
+                delta: 'Part 1. ',
+                ordinal: 0,
+                sessionID: 'session-eof',
+              },
+              type: 'session.text.delta',
+            };
+            // Clean EOF (e.g. server SIGTERM graceful shutdown)
+            return;
+          }
+          yield {
+            data: {
+              assistantMessageID: 'assistant-2',
+              delta: 'Part 2 after restart.',
+              ordinal: 0,
+              sessionID: 'session-eof',
+            },
+            type: 'session.text.delta',
+          };
+          releaseWait();
+          await new Promise<void>((resolve) => {
+            signal?.addEventListener('abort', () => resolve(), { once: true });
+          });
+        }),
+      },
+      message: {
+        list: vi.fn(async () => ({
+          cursor: {},
+          data:
+            attempt >= 2
+              ? [
+                  {
+                    content: [{ text: 'Part 2 after restart.', type: 'text' }],
+                    id: 'assistant-2',
+                    type: 'assistant',
+                  },
+                ]
+              : [],
+        })),
+      },
+      permission: { list: vi.fn(async () => []), reply: vi.fn(async () => {}) },
+      session: {
+        list: vi.fn(async () => ({ cursor: {}, data: [] })),
+        prompt: vi.fn(async () => {}),
+        wait: vi.fn(() => waitPromise),
+      },
+    } as unknown as OpenCodeClient;
+
+    const turn = runSessionTurn({
+      adapterName: 'slack',
+      client,
+      metadata,
+      onChunk: (chunk) => chunks.push(chunk),
+      prompt: 'Run long task',
+      sessionID: 'session-eof',
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(attempt).toBe(1);
+    await vi.advanceTimersByTimeAsync(1000);
+
+    await expect(turn).resolves.toBe('Part 2 after restart.');
+    expect(attempt).toBe(2);
+    expect(chunks).toEqual([
+      { text: 'Part 1. ', type: 'markdown_text' },
+      { text: '\n\n', type: 'markdown_text' },
+      { text: 'Part 2 after restart.', type: 'markdown_text' },
+    ]);
+    expect(warn).toHaveBeenCalledWith('OpenCode event stream closed for session-eof; reconnecting');
+  });
+});
+
+describe('inspectAutonomousTurn', () => {
+  const clientWithMessages = (messages: unknown[]) =>
+    ({
+      message: {
+        list: vi.fn(async () => ({ cursor: {}, data: [...messages].reverse() })),
+      },
+    }) as unknown as OpenCodeClient;
+
+  it('detects stacked automation prompts and restart notices and finds the prior assistant boundary', async () => {
+    const client = clientWithMessages([
+      {
+        content: [{ text: 'De una, dejé 4 timers.', type: 'text' }],
+        id: 'asst-1',
+        type: 'assistant',
+      },
+      { id: 'idle-1', type: 'idle' },
+      {
+        id: 'msg_aut_1',
+        metadata: { automation: { id: 'aut_1', name: '1/4', run: 1 } },
+        text: 'Timer 1/4',
+        type: 'user',
+      },
+      { id: 'syn-restart', metadata: { notice: 'restart' }, text: 'restarted', type: 'synthetic' },
+      {
+        id: 'msg_aut_2',
+        metadata: { automation: { id: 'aut_2', name: '2/4', run: 1 } },
+        text: 'Timer 2/4',
+        type: 'user',
+      },
+      {
+        content: [{ text: 'Chuta, el server se reinició...', type: 'text' }],
+        id: 'asst-2',
+        type: 'assistant',
+      },
+    ]);
+
+    const result = await inspectAutonomousTurn(client, 'ses-1');
+    expect(result).toEqual({
+      autonomous: true,
+      previousAssistantIDs: new Set(['asst-1']),
+    });
+    await expect(inspectAutonomousTurn(client, 'ses-1', 'asst-2')).resolves.toEqual({
+      autonomous: false,
+    });
+  });
+
+  it('ignores manual local CLI prompts even after a server restart, while resuming Slack prompts', async () => {
+    const manualClient = clientWithMessages([
+      { content: [{ text: 'Prev', type: 'text' }], id: 'asst-1', type: 'assistant' },
+      { id: 'user-cli', text: 'git status', type: 'user' },
+      { id: 'syn-restart', metadata: { notice: 'restart' }, text: 'restarted', type: 'synthetic' },
+      { content: [{ text: 'On main', type: 'text' }], id: 'asst-2', type: 'assistant' },
+    ]);
+    await expect(inspectAutonomousTurn(manualClient, 'ses-cli')).resolves.toEqual({
+      autonomous: false,
+    });
+
+    const slackRestartClient = clientWithMessages([
+      { content: [{ text: 'Prev', type: 'text' }], id: 'asst-1', type: 'assistant' },
+      {
+        id: 'user-slack',
+        metadata: { threadID: 'slack:C1:1.0' },
+        text: 'fix bug',
+        type: 'user',
+      },
+      { id: 'syn-restart', metadata: { notice: 'restart' }, text: 'restarted', type: 'synthetic' },
+      { content: [{ text: 'Fixed', type: 'text' }], id: 'asst-2', type: 'assistant' },
+    ]);
+    await expect(inspectAutonomousTurn(slackRestartClient, 'ses-slack')).resolves.toEqual({
+      autonomous: true,
+      previousAssistantIDs: new Set(['asst-1']),
+    });
+  });
+
+  it('distinguishes background job/subagent synthetics from interactive user shell commands', async () => {
+    const interactiveShellClient = clientWithMessages([
+      { content: [{ text: 'Prev', type: 'text' }], id: 'asst-1', type: 'assistant' },
+      {
+        id: 'syn-user-shell',
+        metadata: { exit: 0, shellID: 'sh-local', source: 'shell', state: 'completed' },
+        text: 'The following shell command was executed by the user:',
+        type: 'synthetic',
+      },
+    ]);
+    await expect(inspectAutonomousTurn(interactiveShellClient, 'ses-1')).resolves.toEqual({
+      autonomous: false,
+    });
+
+    const backgroundShellClient = clientWithMessages([
+      { content: [{ text: 'Prev', type: 'text' }], id: 'asst-1', type: 'assistant' },
+      {
+        id: 'syn-bg-shell',
+        metadata: {
+          exit: 0,
+          jobID: 'sh-bg',
+          shellID: 'sh-bg',
+          source: 'shell',
+          state: 'completed',
+        },
+        text: '<background-result kind="shell" id="sh-bg">',
+        type: 'synthetic',
+      },
+    ]);
+    await expect(inspectAutonomousTurn(backgroundShellClient, 'ses-1')).resolves.toEqual({
+      autonomous: true,
+      previousAssistantIDs: new Set(['asst-1']),
+    });
+  });
+});
+
+describe('observeSessionTurn', () => {
+  it('observes without prompting and detaches cleanly without interrupting OpenCode when aborted', async () => {
+    const controller = new AbortController();
+    const interrupt = vi.fn(async () => ({ interrupted: true }));
+    const prompt = vi.fn(async () => {});
+    const client = {
+      message: { list: vi.fn(async () => ({ cursor: {}, data: [] })) },
+      permission: { list: vi.fn(async () => []), reply: vi.fn() },
+      session: {
+        interrupt,
+        list: vi.fn(async () => ({ cursor: {}, data: [] })),
+        prompt,
+        wait: vi.fn(
+          (_input: unknown, requestOptions?: { signal?: AbortSignal }) =>
+            new Promise<void>((_resolve, reject) => {
+              requestOptions?.signal?.addEventListener('abort', () => {
+                reject(new DOMException('Aborted', 'AbortError'));
+              });
+            }),
+        ),
+      },
+    } as unknown as OpenCodeClient;
+
+    const observing = observeSessionTurn({
+      adapterName: 'slack',
+      client,
+      previousAssistantIDs: new Set(['asst-prev']),
+      sessionID: 'session-auto',
+      signal: controller.signal,
+    });
+    await Promise.resolve();
+    controller.abort();
+
+    await expect(observing).rejects.toBeInstanceOf(TurnAbortedError);
+    expect(prompt).not.toHaveBeenCalled();
+    expect(interrupt).not.toHaveBeenCalled();
   });
 });

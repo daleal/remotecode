@@ -1,6 +1,6 @@
 import type { OpenCodeClient } from '@opencode/client';
 import { describe, expect, it, vi } from 'vitest';
-import { getOrCreateThreadSession } from '../thread-session';
+import { getOrCreateThreadSession, resolveSessionThreadID } from '../thread-session';
 
 const config = {
   agent: 'build',
@@ -139,5 +139,88 @@ describe('getOrCreateThreadSession', () => {
       permissions: [{ action: 'question', resource: '*', effect: 'deny' }],
       title: 'thread-1',
     });
+  });
+
+  it('always includes threadID in session metadata even when repository lists are omitted', async () => {
+    const client = {
+      session: {
+        create: vi.fn(async () => ({ id: 'session-minimal' })),
+        list: vi.fn(async () => ({ cursor: {}, data: [] })),
+      },
+    } as unknown as OpenCodeClient;
+
+    await getOrCreateThreadSession({
+      adapterName: 'slack',
+      client,
+      config,
+      directory: '/workspace',
+      threadID: 'slack:C123:1.0',
+    });
+
+    expect(client.session.create).toHaveBeenCalledWith({
+      agent: 'build',
+      location: { directory: '/workspace' },
+      metadata: { threadID: 'slack:C123:1.0' },
+      model: config.model,
+      permissions: [{ action: 'question', resource: '*', effect: 'deny' }],
+      title: 'slack:C123:1.0',
+    });
+  });
+});
+
+describe('resolveSessionThreadID', () => {
+  it('resolves threadID from session metadata and ignores subagents or unknown adapters', async () => {
+    const client = {
+      message: { list: vi.fn() },
+      session: {
+        get: vi.fn(async ({ sessionID }: { sessionID: string }) => {
+          if (sessionID === 'ses-main') {
+            return { id: sessionID, metadata: { threadID: 'slack:C1:123.456' } };
+          }
+          if (sessionID === 'ses-child') {
+            return {
+              id: sessionID,
+              metadata: { threadID: 'slack:C1:123.456' },
+              parentID: 'ses-main',
+            };
+          }
+          return { id: sessionID, metadata: { threadID: 'discord:C1:1' } };
+        }),
+      },
+    } as unknown as OpenCodeClient;
+    const adapters = new Set(['slack']);
+
+    await expect(resolveSessionThreadID(client, 'ses-main', adapters)).resolves.toBe(
+      'slack:C1:123.456',
+    );
+    await expect(resolveSessionThreadID(client, 'ses-child', adapters)).resolves.toBeNull();
+    await expect(resolveSessionThreadID(client, 'ses-other', adapters)).resolves.toBeNull();
+  });
+
+  it('falls back to imported user prompt metadata for legacy titled sessions and returns undefined on errors', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = {
+      message: {
+        list: vi.fn(async () => ({
+          cursor: {},
+          data: [{ id: 'u1', metadata: { threadID: 'slack:C2:999.1' }, type: 'user' }],
+        })),
+      },
+      session: {
+        get: vi.fn(async ({ sessionID }: { sessionID: string }) => {
+          if (sessionID === 'ses-legacy') {
+            return { id: sessionID, title: '[slack] Legacy thread' };
+          }
+          throw new Error('temporary network error');
+        }),
+      },
+    } as unknown as OpenCodeClient;
+    const adapters = new Set(['slack']);
+
+    await expect(resolveSessionThreadID(client, 'ses-legacy', adapters)).resolves.toBe(
+      'slack:C2:999.1',
+    );
+    await expect(resolveSessionThreadID(client, 'ses-error', adapters)).resolves.toBeUndefined();
+    warn.mockRestore();
   });
 });

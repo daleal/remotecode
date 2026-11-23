@@ -11,10 +11,23 @@ import {
 import type { OpenCodeConfig } from './opencode';
 import { selectRepositories } from './repo-selector';
 import { generateAndApplySessionTitle } from './session-title';
-import { runSessionTurn, TurnAbortedError } from './session-turn';
+import {
+  inspectAutonomousTurn,
+  isAutonomousInboxItem,
+  isAutonomousSyntheticMetadata,
+  observeSessionTurn,
+  runSessionTurn,
+  TurnAbortedError,
+  type OpenCodeEvent,
+  type SessionEventStream,
+} from './session-turn';
 import { shouldRespond } from './should-respond';
 import { buildThreadPrompt, collectThreadMessages, threadImageFiles } from './thread-prompt';
-import { getOrCreateThreadSession, type ThreadState } from './thread-session';
+import {
+  getOrCreateThreadSession,
+  resolveSessionThreadID,
+  type ThreadState,
+} from './thread-session';
 import { parseResponseParts, SpecStreamFilter, supportsUI } from './ui';
 import { initThreadWorkspace, provisionWorkspaceRepos, type ThreadWorkspace } from './workspace';
 
@@ -37,6 +50,7 @@ type ProcessMentionOptions = {
   config: OpenCodeConfig;
   getLastMessageID?: () => string | undefined;
   initialStatus?: string;
+  onAssistantMessage?: (assistantMessageID: string) => void;
   onChunk?: (chunk: StreamChunk) => void;
   onMessageEnd?: () => void;
   onSessionReady?: (sessionID: string, lastMessageID: string) => void;
@@ -45,6 +59,7 @@ type ProcessMentionOptions = {
   selectRepos?: typeof selectRepositories;
   shouldContinueWaiting?: () => Promise<boolean> | boolean;
   signal?: AbortSignal;
+  subscribeEvents?: SessionEventStream;
   thread: Thread<ThreadState>;
   triggeringMessage: Message;
   uiAdapters?: readonly string[];
@@ -73,6 +88,7 @@ type ActiveTurn = {
   steerChain: Promise<void>;
   steerEpoch: number;
   steeredMessageIDs: string[];
+  wakeEpoch: number;
 };
 
 const createActiveTurn = (): ActiveTurn => {
@@ -100,23 +116,24 @@ const createActiveTurn = (): ActiveTurn => {
     steerChain: Promise.resolve(),
     steerEpoch: 0,
     steeredMessageIDs: [],
+    wakeEpoch: 0,
   };
 };
 
-class AsyncChunkQueue implements AsyncIterable<StreamChunk> {
+class AsyncQueue<Item> implements AsyncIterable<Item> {
   private closed = false;
-  private readonly queue: StreamChunk[] = [];
-  private waiting: ((result: IteratorResult<StreamChunk>) => void) | undefined;
+  private readonly queue: Item[] = [];
+  private waiting: ((result: IteratorResult<Item>) => void) | undefined;
 
-  push(chunk: StreamChunk) {
+  push(item: Item) {
     if (this.closed) return;
     if (this.waiting) {
       const resolve = this.waiting;
       this.waiting = undefined;
-      resolve({ done: false, value: chunk });
+      resolve({ done: false, value: item });
       return;
     }
-    this.queue.push(chunk);
+    this.queue.push(item);
   }
 
   close() {
@@ -129,19 +146,109 @@ class AsyncChunkQueue implements AsyncIterable<StreamChunk> {
     }
   }
 
-  [Symbol.asyncIterator](): AsyncIterator<StreamChunk> {
+  [Symbol.asyncIterator](): AsyncIterator<Item> {
     return {
       next: () => {
-        const next = this.queue.shift();
-        if (next) return Promise.resolve({ done: false, value: next });
+        if (this.queue.length > 0) {
+          return Promise.resolve({ done: false, value: this.queue.shift() as Item });
+        }
         if (this.closed) return Promise.resolve({ done: true, value: undefined });
         return new Promise((resolve) => {
           this.waiting = resolve;
         });
       },
+      return: () => {
+        this.close();
+        return Promise.resolve({ done: true, value: undefined });
+      },
     };
   }
 }
+
+type EventHub = {
+  start: () => void;
+  stop: () => Promise<void>;
+  subscribe: SessionEventStream;
+};
+
+const createEventHub = (
+  client: OpenCodeClient,
+  onEvent: (event: OpenCodeEvent) => void,
+): EventHub | undefined => {
+  if (typeof client.event?.subscribe !== 'function') return undefined;
+
+  const controller = new AbortController();
+  const subscribers = new Set<AsyncQueue<OpenCodeEvent>>();
+  let ended = false;
+  let pumpPromise: Promise<void> | undefined;
+  let started = false;
+
+  const closeSubscribers = () => {
+    for (const subscriber of subscribers) {
+      subscriber.close();
+    }
+    subscribers.clear();
+  };
+
+  const pump = async () => {
+    while (!controller.signal.aborted) {
+      let sawServerConnected = false;
+      try {
+        for await (const event of client.event.subscribe({ signal: controller.signal })) {
+          if (controller.signal.aborted) return;
+          if (event.type === 'server.connected') {
+            sawServerConnected = true;
+          }
+          for (const subscriber of subscribers) {
+            subscriber.push(event);
+          }
+          onEvent(event);
+        }
+        if (!sawServerConnected || controller.signal.aborted) {
+          ended = true;
+          closeSubscribers();
+          return;
+        }
+        console.warn('OpenCode event stream closed; reconnecting');
+        await sleep(1000, controller.signal);
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        console.warn('OpenCode event stream failed; reconnecting', error);
+        await sleep(1000, controller.signal);
+      }
+    }
+  };
+
+  const start = () => {
+    if (started || controller.signal.aborted) return;
+    started = true;
+    pumpPromise = pump();
+  };
+
+  const stop = async () => {
+    controller.abort();
+    ended = true;
+    closeSubscribers();
+    await pumpPromise;
+  };
+
+  const subscribe: SessionEventStream = (signal) => {
+    const queue = new AsyncQueue<OpenCodeEvent>();
+    if (signal.aborted || ended) {
+      queue.close();
+      return queue;
+    }
+    subscribers.add(queue);
+    const cleanup = () => {
+      subscribers.delete(queue);
+      queue.close();
+    };
+    signal.addEventListener('abort', cleanup, { once: true });
+    return queue;
+  };
+
+  return { start, stop, subscribe };
+};
 
 export const createAgent = (options: CreateAgentOptions) => {
   const bot = new Chat<typeof options.adapters, ThreadState>({
@@ -154,9 +261,298 @@ export const createAgent = (options: CreateAgentOptions) => {
   });
 
   const activeTurns = new Map<string, ActiveTurn>();
+  const activeTurnBySession = new Map<string, ActiveTurn>();
+  const adapterNames = new Set(Object.keys(options.adapters));
+  const autonomousTasks = new Set<Promise<void>>();
+  const lastDeliveredAssistantBySession = new Map<string, string>();
+  const pendingAutonomousSessions = new Set<string>();
+  const sessionThreads = new Map<string, string | null>();
+  const shutdownAbort = new AbortController();
   const initWorkspace = options.initWorkspace ?? initThreadWorkspace;
   const provisionRepos = options.provisionRepos ?? provisionWorkspaceRepos;
   const selectRepos = options.selectRepos ?? selectRepositories;
+
+  const trackAutonomousTask = (task: Promise<void>) => {
+    autonomousTasks.add(task);
+    void task.finally(() => {
+      autonomousTasks.delete(task);
+    });
+    return task;
+  };
+
+  const createWaitGuard = (turn: ActiveTurn) => {
+    let observedSteerEpoch = turn.steerEpoch;
+    let observedWakeEpoch = turn.wakeEpoch;
+    return async () => {
+      await turn.steerChain;
+      if (turn.steerEpoch !== observedSteerEpoch || turn.wakeEpoch !== observedWakeEpoch) {
+        observedSteerEpoch = turn.steerEpoch;
+        observedWakeEpoch = turn.wakeEpoch;
+        return true;
+      }
+      turn.closing = true;
+      return false;
+    };
+  };
+
+  const runAutonomousTurn = ({
+    previousAssistantIDs,
+    sessionID,
+    threadID,
+  }: {
+    previousAssistantIDs?: ReadonlySet<string>;
+    sessionID: string;
+    threadID: string;
+  }): Promise<void> => {
+    const thread = bot.thread(threadID);
+    const turn = createActiveTurn();
+    turn.sessionSettled = true;
+    turn.resolveSession(sessionID);
+    activeTurns.set(thread.id, turn);
+    activeTurnBySession.set(sessionID, turn);
+
+    const messenger = createTurnMessenger({
+      thread,
+      uiAdapters: options.uiAdapters,
+    });
+    turn.onStatus = (status) => {
+      void messenger.setStatus(status);
+    };
+    turn.onSteerStart = () => {
+      void messenger.setStatus('Updating approach...', { force: true });
+    };
+    turn.onSteer = () => {
+      void messenger.setStatus('Updating approach...');
+    };
+
+    void messenger.setStatus('Thinking...');
+
+    // Start observing synchronously so the event hub subscriber attaches before the next event yields.
+    const observation = observeSessionTurn({
+      adapterName: thread.adapter.name,
+      client: options.openCode,
+      interruptOnAbort: false,
+      onAssistantMessage: (assistantMessageID) => {
+        lastDeliveredAssistantBySession.set(sessionID, assistantMessageID);
+      },
+      onChunk: messenger.emitChunk,
+      onMessageEnd: messenger.endMessage,
+      onStatus: (status) => {
+        void messenger.setStatus(status);
+      },
+      previousAssistantIDs,
+      sessionID,
+      shouldContinueWaiting: createWaitGuard(turn),
+      signal: shutdownAbort.signal,
+      subscribeEvents: eventHub?.subscribe,
+    });
+
+    const task = (async () => {
+      let posted = false;
+      try {
+        await thread.subscribe().catch((error) => {
+          console.warn(`Could not subscribe to thread ${thread.id}`, error);
+        });
+        const existingState = await thread.state;
+        if (existingState?.lastMessageID && !turn.lastMessageID) {
+          turn.lastMessageID = existingState.lastMessageID;
+        }
+        if (!existingState?.sessionID) {
+          await thread.setState({ sessionID }).catch((error) => {
+            console.warn(`Could not persist session state for ${thread.id}`, error);
+          });
+        }
+
+        const response = await observation;
+        if (response !== undefined) {
+          await messenger.finish(response);
+          posted = true;
+        } else {
+          await messenger.abort();
+        }
+      } catch (error) {
+        await messenger.abort();
+        if (!(error instanceof TurnAbortedError || shutdownAbort.signal.aborted)) {
+          console.error(`Autonomous turn failed for OpenCode session ${sessionID}`, error);
+        }
+      } finally {
+        turn.closing = true;
+        await turn.steerChain.catch(() => {});
+        if (activeTurns.get(thread.id) === turn) {
+          activeTurns.delete(thread.id);
+        }
+        if (activeTurnBySession.get(sessionID) === turn) {
+          activeTurnBySession.delete(sessionID);
+        }
+        turn.resolveFinished();
+        await messenger.cleanup(!posted);
+      }
+    })();
+
+    return trackAutonomousTask(task);
+  };
+
+  const maybeObserveAutonomousSession = (
+    sessionID: string,
+    { knownAutonomous }: { knownAutonomous: boolean },
+  ) => {
+    if (shutdownAbort.signal.aborted) return;
+
+    const activeForSession = activeTurnBySession.get(sessionID);
+    if (activeForSession && !activeForSession.closing) {
+      if (knownAutonomous) {
+        activeForSession.wakeEpoch += 1;
+      }
+      return;
+    }
+
+    if (pendingAutonomousSessions.has(sessionID)) return;
+
+    const cachedThreadID = sessionThreads.get(sessionID);
+    if (cachedThreadID === null) return;
+
+    if (knownAutonomous && typeof cachedThreadID === 'string') {
+      const existing = activeTurns.get(cachedThreadID);
+      if (!existing) {
+        const lastDelivered = lastDeliveredAssistantBySession.get(sessionID);
+        void runAutonomousTurn({
+          previousAssistantIDs: lastDelivered ? new Set([lastDelivered]) : undefined,
+          sessionID,
+          threadID: cachedThreadID,
+        });
+        return;
+      }
+    }
+
+    pendingAutonomousSessions.add(sessionID);
+    trackAutonomousTask(
+      (async () => {
+        try {
+          let threadID: string | null | undefined = sessionThreads.get(sessionID);
+          if (threadID === undefined) {
+            threadID = await resolveSessionThreadID(options.openCode, sessionID, adapterNames);
+            if (threadID !== undefined) {
+              sessionThreads.set(sessionID, threadID);
+            }
+          }
+          if (!threadID || shutdownAbort.signal.aborted) return;
+
+          for (;;) {
+            const existing = activeTurns.get(threadID);
+            if (!existing) break;
+            if (!existing.closing) {
+              if (knownAutonomous && activeTurnBySession.get(sessionID) === existing) {
+                existing.wakeEpoch += 1;
+              }
+              return;
+            }
+            await existing.finished;
+            if (shutdownAbort.signal.aborted) return;
+          }
+
+          let previousAssistantIDs: Set<string> | undefined;
+          const lastDelivered = lastDeliveredAssistantBySession.get(sessionID);
+          if (knownAutonomous && lastDelivered) {
+            previousAssistantIDs = new Set([lastDelivered]);
+          } else {
+            const inspection = await inspectAutonomousTurn(
+              options.openCode,
+              sessionID,
+              lastDelivered,
+            );
+            if (shutdownAbort.signal.aborted) return;
+            if (inspection.autonomous) {
+              previousAssistantIDs = inspection.previousAssistantIDs;
+            } else if (!knownAutonomous) {
+              return;
+            }
+          }
+
+          if (shutdownAbort.signal.aborted || activeTurns.has(threadID)) return;
+          await runAutonomousTurn({ previousAssistantIDs, sessionID, threadID });
+        } catch (error) {
+          if (!shutdownAbort.signal.aborted) {
+            console.warn(`Could not observe autonomous OpenCode session ${sessionID}`, error);
+          }
+        } finally {
+          pendingAutonomousSessions.delete(sessionID);
+        }
+      })(),
+    );
+  };
+
+  const reconcileActiveSessions = () => {
+    if (shutdownAbort.signal.aborted) return;
+    if (typeof options.openCode.session?.active !== 'function') return;
+    trackAutonomousTask(
+      options.openCode.session
+        .active()
+        .then((active) => {
+          for (const sessionID of Object.keys(active)) {
+            maybeObserveAutonomousSession(sessionID, { knownAutonomous: false });
+          }
+        })
+        .catch((error) => {
+          if (shutdownAbort.signal.aborted) return;
+          console.warn('Could not list active OpenCode sessions', error);
+        }),
+    );
+  };
+
+  const handleOpenCodeEvent = (event: OpenCodeEvent) => {
+    if (event.type === 'server.connected') {
+      reconcileActiveSessions();
+      return;
+    }
+
+    if (!('data' in event) || !event.data || !('sessionID' in event.data)) return;
+    const sessionID = event.data.sessionID;
+    if (typeof sessionID !== 'string') return;
+
+    if (event.type === 'session.inbox.enqueued') {
+      if (isAutonomousInboxItem(event.data.item)) {
+        const knownAutonomous =
+          event.data.item.type === 'user' ||
+          (event.data.item.type === 'synthetic' &&
+            event.data.item.payload.metadata?.notice !== 'restart');
+        maybeObserveAutonomousSession(sessionID, { knownAutonomous });
+      }
+      return;
+    }
+
+    if (event.type === 'session.synthetic') {
+      if (isAutonomousSyntheticMetadata(event.data.metadata)) {
+        const knownAutonomous = event.data.metadata?.notice !== 'restart';
+        maybeObserveAutonomousSession(sessionID, { knownAutonomous });
+      }
+      return;
+    }
+
+    if (
+      event.type === 'session.execution.started' ||
+      event.type === 'session.step.started' ||
+      event.type === 'session.text.delta' ||
+      (event.type === 'session.status' && event.data.status.type === 'busy')
+    ) {
+      maybeObserveAutonomousSession(sessionID, { knownAutonomous: false });
+    }
+  };
+
+  const eventHub = createEventHub(options.openCode, handleOpenCodeEvent);
+
+  const originalInitialize = bot.initialize.bind(bot);
+  bot.initialize = async () => {
+    await originalInitialize();
+    eventHub?.start();
+  };
+
+  const originalShutdown = bot.shutdown.bind(bot);
+  bot.shutdown = async () => {
+    shutdownAbort.abort();
+    await eventHub?.stop();
+    await Promise.allSettled([...autonomousTasks]);
+    await originalShutdown();
+  };
 
   const handleMessage = async (thread: Thread<ThreadState>, message: Message) => {
     if (!options.allowedUsers.includes(message.author.userId)) return;
@@ -221,6 +617,7 @@ export const createAgent = (options: CreateAgentOptions) => {
 
     let outcomeEmoji: 'octagonal_sign' | 'x' | undefined;
     let posted = false;
+    let turnSessionID: string | undefined;
     try {
       const workspace =
         existingState?.directory &&
@@ -241,25 +638,22 @@ export const createAgent = (options: CreateAgentOptions) => {
               workspaceRoot: options.config.workspaceRoot,
             });
 
-      let observedSteerEpoch = turn.steerEpoch;
-      const shouldContinueWaiting = async () => {
-        await turn.steerChain;
-        if (turn.steerEpoch !== observedSteerEpoch) {
-          observedSteerEpoch = turn.steerEpoch;
-          return true;
-        }
-        turn.closing = true;
-        return false;
-      };
-
       const response = await processMention({
         client: options.openCode,
         config: options.config,
         getLastMessageID: () => turn.lastMessageID,
         initialStatus,
+        onAssistantMessage: (assistantMessageID) => {
+          if (turnSessionID) {
+            lastDeliveredAssistantBySession.set(turnSessionID, assistantMessageID);
+          }
+        },
         onChunk: messenger.emitChunk,
         onMessageEnd: messenger.endMessage,
         onSessionReady: (sessionID, lastMessageID) => {
+          turnSessionID = sessionID;
+          sessionThreads.set(sessionID, thread.id);
+          activeTurnBySession.set(sessionID, turn);
           turn.lastMessageID = lastMessageID;
           if (!turn.sessionSettled) {
             turn.sessionSettled = true;
@@ -269,8 +663,9 @@ export const createAgent = (options: CreateAgentOptions) => {
         onStatus: (status, statusOptions) => messenger.setStatus(status, statusOptions),
         provisionRepos,
         selectRepos,
-        shouldContinueWaiting,
+        shouldContinueWaiting: createWaitGuard(turn),
         signal: thread.signal,
+        subscribeEvents: eventHub?.subscribe,
         thread,
         triggeringMessage: message,
         uiAdapters: options.uiAdapters,
@@ -297,6 +692,9 @@ export const createAgent = (options: CreateAgentOptions) => {
       await turn.steerChain.catch(() => {});
       if (activeTurns.get(thread.id) === turn) {
         activeTurns.delete(thread.id);
+      }
+      if (turnSessionID && activeTurnBySession.get(turnSessionID) === turn) {
+        activeTurnBySession.delete(turnSessionID);
       }
       turn.resolveFinished();
       await messenger.cleanup(!posted);
@@ -434,14 +832,17 @@ const steerActiveTurn = ({
     turn.onSteerStart?.();
 
     try {
-      const { messages, priorMessages } = await collectThreadMessages(thread, turn.lastMessageID);
+      const state = await thread.state;
+      const { messages, priorMessages } = await collectThreadMessages(
+        thread,
+        turn.lastMessageID ?? state?.lastMessageID,
+      );
       if (!messages.some((item) => item.id === message.id)) {
         messages.push(message);
       }
       const contextMessages = messages.filter((item) => !item.author.isMe);
       const lastMessageID = contextMessages.at(-1)?.id ?? message.id;
 
-      const state = await thread.state;
       const availableRepos = state?.availableRepos;
       let provisionedRepos = state?.provisionedRepos;
       let newlyProvisionedRepos: string[] = [];
@@ -547,7 +948,7 @@ const postResponse = async (
 const STATUS_KEEPALIVE_MS = 90_000;
 
 type MessageStream = {
-  chunkQueue: AsyncChunkQueue;
+  chunkQueue: AsyncQueue<StreamChunk>;
   specFilter: SpecStreamFilter;
   started: boolean;
 };
@@ -637,7 +1038,7 @@ const createTurnMessenger = ({
   const ensureCurrentMessage = (): MessageStream => {
     if (currentMessage) return currentMessage;
     const message: MessageStream = {
-      chunkQueue: new AsyncChunkQueue(),
+      chunkQueue: new AsyncQueue<StreamChunk>(),
       specFilter: new SpecStreamFilter({
         enabled: uiEnabled,
         onSpecStart: () => {
@@ -863,6 +1264,7 @@ export const processMention = async ({
   config,
   getLastMessageID,
   initialStatus,
+  onAssistantMessage,
   onChunk,
   onMessageEnd,
   onSessionReady,
@@ -871,6 +1273,7 @@ export const processMention = async ({
   selectRepos = selectRepositories,
   shouldContinueWaiting,
   signal,
+  subscribeEvents,
   thread,
   triggeringMessage,
   uiAdapters,
@@ -972,6 +1375,7 @@ export const processMention = async ({
       source: thread.adapter.name,
       threadID: thread.id,
     },
+    onAssistantMessage,
     onChunk,
     onMessageEnd,
     onStatus: onStatus ? (status) => void onStatus(status) : undefined,
@@ -979,6 +1383,7 @@ export const processMention = async ({
     sessionID: session.sessionID,
     shouldContinueWaiting,
     signal,
+    subscribeEvents,
   });
   const finalLastMessageID = getLastMessageID?.() ?? lastMessageID;
   await thread.setState({ lastMessageID: finalLastMessageID, sessionID: session.sessionID });
@@ -1018,3 +1423,20 @@ const sendSessionInstructions = async ({
     console.error('Could not post session instructions', error);
   }
 };
+
+const sleep = (milliseconds: number, signal?: AbortSignal) =>
+  new Promise<void>((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, milliseconds);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });

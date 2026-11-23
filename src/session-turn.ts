@@ -1,5 +1,12 @@
-import type { OpenCodeClient, SessionMessageInfo } from '@opencode/client';
+import type { OpenCodeClient, SessionInboxItem, SessionMessageInfo } from '@opencode/client';
 import type { StreamChunk } from 'chat';
+
+export type OpenCodeEvent =
+  ReturnType<OpenCodeClient['event']['subscribe']> extends AsyncIterable<infer Event>
+    ? Event
+    : never;
+
+export type SessionEventStream = (signal: AbortSignal) => AsyncIterable<OpenCodeEvent>;
 
 export class TurnAbortedError extends Error {
   constructor() {
@@ -19,6 +26,7 @@ export type RunSessionTurnOptions = {
     source: string;
     threadID: string;
   };
+  onAssistantMessage?: (assistantMessageID: string) => void;
   onChunk?: (chunk: StreamChunk) => void;
   onMessageEnd?: () => void;
   onStatus?: (status: string) => void;
@@ -26,6 +34,22 @@ export type RunSessionTurnOptions = {
   sessionID: string;
   shouldContinueWaiting?: () => Promise<boolean> | boolean;
   signal?: AbortSignal;
+  subscribeEvents?: SessionEventStream;
+};
+
+export type ObserveSessionTurnOptions = {
+  adapterName: string;
+  client: OpenCodeClient;
+  interruptOnAbort?: boolean;
+  onAssistantMessage?: (assistantMessageID: string) => void;
+  onChunk?: (chunk: StreamChunk) => void;
+  onMessageEnd?: () => void;
+  onStatus?: (status: string) => void;
+  previousAssistantIDs?: ReadonlySet<string>;
+  sessionID: string;
+  shouldContinueWaiting?: () => Promise<boolean> | boolean;
+  signal?: AbortSignal;
+  subscribeEvents?: SessionEventStream;
 };
 
 export const runSessionTurn = async ({
@@ -33,6 +57,7 @@ export const runSessionTurn = async ({
   client,
   files,
   metadata,
+  onAssistantMessage,
   onChunk,
   onMessageEnd,
   onStatus,
@@ -40,10 +65,107 @@ export const runSessionTurn = async ({
   sessionID,
   shouldContinueWaiting,
   signal,
-}: RunSessionTurnOptions) => {
+  subscribeEvents,
+}: RunSessionTurnOptions): Promise<string> => {
   if (signal?.aborted) throw new TurnAbortedError();
 
   const previousAssistantIDs = await assistantMessageIDs(client, sessionID);
+  const result = await executeSessionTurn({
+    adapterName,
+    allowEmpty: false,
+    client,
+    interruptOnAbort: true,
+    onAssistantMessage,
+    onChunk,
+    onMessageEnd,
+    onStatus,
+    previousAssistantIDs,
+    promptRequest: {
+      metadata,
+      sessionID,
+      text: prompt,
+      ...(files?.length ? { files } : {}),
+    },
+    sessionID,
+    shouldContinueWaiting,
+    signal,
+    subscribeEvents,
+  });
+  return result ?? '';
+};
+
+export const observeSessionTurn = async ({
+  adapterName,
+  client,
+  interruptOnAbort = false,
+  onAssistantMessage,
+  onChunk,
+  onMessageEnd,
+  onStatus,
+  previousAssistantIDs,
+  sessionID,
+  shouldContinueWaiting,
+  signal,
+  subscribeEvents,
+}: ObserveSessionTurnOptions): Promise<string | undefined> => {
+  if (signal?.aborted) throw new TurnAbortedError();
+
+  const resolvedPrevious = previousAssistantIDs
+    ? new Set(previousAssistantIDs)
+    : await assistantMessageIDs(client, sessionID);
+
+  return executeSessionTurn({
+    adapterName,
+    allowEmpty: true,
+    client,
+    interruptOnAbort,
+    onAssistantMessage,
+    onChunk,
+    onMessageEnd,
+    onStatus,
+    previousAssistantIDs: resolvedPrevious,
+    sessionID,
+    shouldContinueWaiting,
+    signal,
+    subscribeEvents,
+  });
+};
+
+type ExecuteSessionTurnOptions = {
+  adapterName: string;
+  allowEmpty: boolean;
+  client: OpenCodeClient;
+  interruptOnAbort: boolean;
+  onAssistantMessage?: (assistantMessageID: string) => void;
+  onChunk?: (chunk: StreamChunk) => void;
+  onMessageEnd?: () => void;
+  onStatus?: (status: string) => void;
+  previousAssistantIDs: Set<string>;
+  promptRequest?: Parameters<OpenCodeClient['session']['prompt']>[0];
+  sessionID: string;
+  shouldContinueWaiting?: () => Promise<boolean> | boolean;
+  signal?: AbortSignal;
+  subscribeEvents?: SessionEventStream;
+};
+
+const executeSessionTurn = async ({
+  adapterName,
+  allowEmpty,
+  client,
+  interruptOnAbort,
+  onAssistantMessage,
+  onChunk,
+  onMessageEnd,
+  onStatus,
+  previousAssistantIDs,
+  promptRequest,
+  sessionID,
+  shouldContinueWaiting,
+  signal,
+  subscribeEvents,
+}: ExecuteSessionTurnOptions): Promise<string | undefined> => {
+  if (signal?.aborted) throw new TurnAbortedError();
+
   let stopRequestMonitor = () => {};
   const requestMonitorStopped = new Promise<void>((resolve) => {
     stopRequestMonitor = resolve;
@@ -59,7 +181,7 @@ export const runSessionTurn = async ({
   let interrupted = false;
   const onAbort = () => {
     eventAbort.abort();
-    if (interrupted) return;
+    if (!interruptOnAbort || interrupted) return;
     interrupted = true;
     void interruptSession(client, sessionID);
   };
@@ -73,16 +195,21 @@ export const runSessionTurn = async ({
         onChunk(chunk);
       }
     : undefined;
-  const canStreamEvents = Boolean(emitChunk && typeof client.event?.subscribe === 'function');
+  const eventSource =
+    subscribeEvents ??
+    (typeof client.event?.subscribe === 'function'
+      ? (eventSignal: AbortSignal) => client.event.subscribe({ signal: eventSignal })
+      : undefined);
+  const canStreamEvents = Boolean(emitChunk && eventSource);
   const streamController: StreamController = {
     flush: () => {},
     setWaiting: () => {},
   };
   const eventMonitor =
-    canStreamEvents && emitChunk
+    canStreamEvents && emitChunk && eventSource
       ? streamSessionEvents({
-          client,
           controller: streamController,
+          onAssistantMessage,
           onChunk: emitChunk,
           onMessageEnd,
           onStatus,
@@ -90,17 +217,15 @@ export const runSessionTurn = async ({
           sessionID,
           signal: eventAbort.signal,
           streamedAssistantIDs,
+          subscribeEvents: eventSource,
         })
       : Promise.resolve();
 
   let newMessages: SessionMessageInfo[];
   try {
-    await client.session.prompt({
-      metadata,
-      sessionID,
-      text: prompt,
-      ...(files?.length ? { files } : {}),
-    });
+    if (promptRequest) {
+      await client.session.prompt(promptRequest);
+    }
 
     for (;;) {
       streamController.setWaiting(false);
@@ -142,6 +267,9 @@ export const runSessionTurn = async ({
 
   const result = newMessages.filter((item) => item.type === 'assistant');
   const finalMessage = result.at(-1);
+  if (finalMessage) {
+    onAssistantMessage?.(finalMessage.id);
+  }
   const replies = (finalMessage?.content ?? [])
     .filter((part) => part.type === 'text')
     .map((part) => part.text.trim())
@@ -149,7 +277,13 @@ export const runSessionTurn = async ({
 
   if (replies.length === 0) {
     const failure = result.findLast((item) => item.error);
-    throw new Error(failure?.error?.message ?? 'OpenCode returned no text');
+    if (failure?.error) {
+      throw new Error(failure.error.message ?? 'OpenCode returned no text');
+    }
+    if (allowEmpty) {
+      return emittedAnyChunk ? '' : undefined;
+    }
+    throw new Error('OpenCode returned no text');
   }
 
   const finalText = replies.join('\n\n');
@@ -163,6 +297,102 @@ export const runSessionTurn = async ({
   }
 
   return finalText;
+};
+
+export const isAutonomousInboxItem = (item: SessionInboxItem): boolean => {
+  if (item.type === 'user') {
+    return Boolean(item.payload.metadata?.automation);
+  }
+  if (item.type === 'synthetic') {
+    return isAutonomousSyntheticMetadata(item.payload.metadata);
+  }
+  return false;
+};
+
+export const isAutonomousSyntheticMetadata = (metadata?: Record<string, unknown>): boolean => {
+  if (!metadata) return false;
+  if (metadata.source === 'subagent') return true;
+  if (typeof metadata.jobID === 'string') return true;
+  if (metadata.notice === 'restart') return true;
+  return false;
+};
+
+export type AutonomousTurnInspection =
+  | { autonomous: false }
+  | { autonomous: true; previousAssistantIDs: Set<string> };
+
+export const inspectAutonomousTurn = async (
+  client: OpenCodeClient,
+  sessionID: string,
+  lastDeliveredAssistantID?: string,
+): Promise<AutonomousTurnInspection> => {
+  let cursor: string | undefined;
+  let sawAutonomous = false;
+  let sawRestart = false;
+
+  do {
+    const page = await client.message.list({
+      sessionID,
+      limit: 100,
+      ...(cursor ? { cursor } : { order: 'desc' }),
+    });
+
+    for (const item of page.data) {
+      if (item.type === 'assistant') {
+        if (lastDeliveredAssistantID && item.id === lastDeliveredAssistantID) {
+          if (sawAutonomous) {
+            return { autonomous: true, previousAssistantIDs: new Set([lastDeliveredAssistantID]) };
+          }
+          return { autonomous: false };
+        }
+        if (sawAutonomous) {
+          return {
+            autonomous: true,
+            previousAssistantIDs: new Set([lastDeliveredAssistantID ?? item.id]),
+          };
+        }
+        continue;
+      }
+
+      if (item.type === 'user') {
+        if (item.metadata?.automation) {
+          sawAutonomous = true;
+          continue;
+        }
+        if (sawRestart && typeof item.metadata?.threadID === 'string') {
+          sawAutonomous = true;
+          continue;
+        }
+        if (!sawAutonomous) {
+          return { autonomous: false };
+        }
+        continue;
+      }
+
+      if (item.type === 'synthetic') {
+        if (item.metadata?.notice === 'restart') {
+          sawRestart = true;
+          continue;
+        }
+        if (isAutonomousSyntheticMetadata(item.metadata)) {
+          sawAutonomous = true;
+          continue;
+        }
+      }
+    }
+
+    cursor = page.cursor.next ?? undefined;
+  } while (cursor);
+
+  if (sawAutonomous) {
+    return {
+      autonomous: true,
+      previousAssistantIDs: lastDeliveredAssistantID
+        ? new Set([lastDeliveredAssistantID])
+        : new Set<string>(),
+    };
+  }
+  return { autonomous: false };
 };
 
 const interruptSession = async (client: OpenCodeClient, sessionID: string) => {
@@ -179,8 +409,8 @@ type StreamController = {
 };
 
 type StreamSessionEventsOptions = {
-  client: OpenCodeClient;
   controller: StreamController;
+  onAssistantMessage?: (assistantMessageID: string) => void;
   onChunk: (chunk: StreamChunk) => void;
   onMessageEnd?: () => void;
   onStatus?: (status: string) => void;
@@ -188,11 +418,12 @@ type StreamSessionEventsOptions = {
   sessionID: string;
   signal: AbortSignal;
   streamedAssistantIDs: Set<string>;
+  subscribeEvents: SessionEventStream;
 };
 
 const streamSessionEvents = async ({
-  client,
   controller,
+  onAssistantMessage,
   onChunk,
   onMessageEnd,
   onStatus,
@@ -200,6 +431,7 @@ const streamSessionEvents = async ({
   sessionID,
   signal,
   streamedAssistantIDs,
+  subscribeEvents,
 }: StreamSessionEventsOptions) => {
   const toolNames = new Map<string, string>();
   const streamedTextByPart = new Map<string, string>();
@@ -241,6 +473,7 @@ const streamSessionEvents = async ({
     }
     activeAssistantID = assistantMessageID;
     streamedAssistantIDs.add(assistantMessageID);
+    onAssistantMessage?.(assistantMessageID);
     streamedTextByPart.set(key, (streamedTextByPart.get(key) ?? '') + delta);
     emittedAnyText = true;
     lastTextEndedWithNewlines = delta.endsWith('\n\n');
@@ -248,9 +481,14 @@ const streamSessionEvents = async ({
   };
 
   while (!signal.aborted) {
+    let sawServerConnected = false;
     try {
-      for await (const event of client.event.subscribe({ signal })) {
+      for await (const event of subscribeEvents(signal)) {
         if (signal.aborted) return;
+        if (event.type === 'server.connected') {
+          sawServerConnected = true;
+          continue;
+        }
         if (!('data' in event) || !event.data || !('sessionID' in event.data)) continue;
         if (event.data.sessionID !== sessionID) continue;
 
@@ -318,7 +556,9 @@ const streamSessionEvents = async ({
           }
         }
       }
-      return;
+      if (!sawServerConnected || signal.aborted) return;
+      console.warn(`OpenCode event stream closed for ${sessionID}; reconnecting`);
+      await sleep(1000, signal);
     } catch (error) {
       if (signal.aborted) return;
       console.warn(`OpenCode event stream failed for ${sessionID}; reconnecting`, error);
