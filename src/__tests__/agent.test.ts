@@ -2043,4 +2043,58 @@ describe('Slack agent', () => {
       { emoji: 'stopwatch', messageId: adapter.reactions[0]?.messageId },
     ]);
   });
+
+  it('prefers adapter.setAssistantTitle over legacy webClient.assistant.threads.setTitle', async () => {
+    const messages: unknown[] = [];
+    const client = {
+      experimental: { generate: { text: vi.fn(async () => ({ text: 'Agent session title' })) } },
+      message: {
+        list: vi.fn(async () => ({ cursor: {}, data: [...messages].reverse() })),
+      },
+      permission: { list: vi.fn(async () => []), reply: vi.fn(async () => {}) },
+      session: {
+        create: vi.fn(async () => ({ id: 'session-title-pref' })),
+        list: vi.fn(async () => ({ cursor: {}, data: [] })),
+        prompt: vi.fn(async (input: { metadata?: Record<string, unknown> }) => {
+          messages.push(
+            { id: 'user-1', metadata: input.metadata, type: 'user' },
+            { content: [{ text: 'Done.', type: 'text' }], id: 'asst-1', type: 'assistant' },
+          );
+        }),
+        update: vi.fn(async () => {}),
+        wait: vi.fn(async () => {}),
+      },
+    } as unknown as OpenCodeClient;
+
+    const legacySetTitle = vi.fn(async () => {
+      throw new Error('no_permission');
+    });
+    const adapter = new MockAdapter('remotecode');
+    Object.assign(adapter, {
+      webClient: { assistant: { threads: { setTitle: legacySetTitle } } },
+    });
+
+    const bot = createAgent({
+      adapters: { mock: adapter },
+      allowedUsers: ['local-user'],
+      config: {
+        agent: 'build',
+        model: { id: 'model', providerID: 'provider', variant: 'high' },
+        reposRoot: '/tmp',
+        smallModel: { id: 'small-model', providerID: 'provider' },
+        workspaceRoot: '/tmp/workspaces',
+      },
+      openCode: client,
+      state: createMemoryState(),
+      userName: 'remotecode',
+      ...staticWorkspace,
+    });
+    bots.push(bot);
+    await bot.initialize();
+
+    await adapter.receive('title-pref', 'hello');
+
+    expect(adapter.assistantTitles).toEqual(['Agent session title']);
+    expect(legacySetTitle).not.toHaveBeenCalled();
+  });
 });

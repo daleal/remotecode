@@ -1322,21 +1322,21 @@ const setAdapterThreadTitle = async (thread: Thread<ThreadState>, title: string)
   const parts = decodedThreadParts(thread);
   if (!parts) return;
 
-  const setTitle = adapter.webClient?.assistant?.threads?.setTitle;
-  if (typeof setTitle === 'function') {
+  if (typeof adapter.setAssistantTitle === 'function') {
     try {
-      await setTitle({ channel_id: parts.channel, thread_ts: parts.threadTs, title });
+      await adapter.setAssistantTitle(parts.channel, parts.threadTs, title);
     } catch (error) {
-      console.warn('Could not set Slack thread title', error);
+      console.warn('Could not set adapter thread title', error);
     }
     return;
   }
 
-  if (typeof adapter.setAssistantTitle !== 'function') return;
+  const setTitle = adapter.webClient?.assistant?.threads?.setTitle;
+  if (typeof setTitle !== 'function') return;
   try {
-    await adapter.setAssistantTitle(parts.channel, parts.threadTs, title);
+    await setTitle({ channel_id: parts.channel, thread_ts: parts.threadTs, title });
   } catch (error) {
-    console.warn('Could not set adapter thread title', error);
+    console.warn('Could not set Slack thread title', error);
   }
 };
 
