@@ -12,17 +12,34 @@ Mention it in a channel or send it a DM. It works on your repositories and repli
 ```mermaid
 flowchart TD
     message["Mention RemoteCode or send a DM"] --> bot["RemoteCode routes the message"]
-    bot --> thread{"New thread?"}
+    bot --> active{"Active turn?"}
     subgraph server["OpenCode server"]
-        thread -->|Yes| create["Create isolated Git worktrees<br/>and an OpenCode session"]
+        active -->|Yes| steer["Steer the running session<br/>(and provision extra repos if needed)"]
+        active -->|No| thread{"New thread?"}
+        thread -->|Yes| create["Create an isolated workspace<br/>and an OpenCode session"]
         thread -->|No| resume["Reuse the thread's workspace<br/>and session"]
-        create --> agent["Agent works on your request"]
-        resume --> agent
+        create --> repos["Lazily provision needed Git worktrees"]
+        resume --> repos
+        repos --> agent["Agent works on your request"]
+        steer --> agent
     end
-    agent --> reply["RemoteCode posts the reply<br/>in the same Slack thread"]
+    agent --> reply["RemoteCode streams replies & status<br/>in the same Slack thread"]
 ```
 
-Slack reactions track progress: ⚙️ setting up → 👀 working → ✅ finished or ❌ failed.
+RemoteCode uses Slack's **Agent View** to stream replies live and show what the agent is doing
+(`Thinking...`, `Preparing repositories...`, active tool calls, `Updating approach...`,
+`Waiting for background command...`, `Waiting for subagent...`, `Rendering card...`) with a
+keepalive during long operations. Intermediate updates split into separate messages across tool
+calls, steps, and background waits, and turns stay alive while background shells, subagents, or
+jobs finish.
+
+- **Mid-turn steering & cancellation:** Sending a follow-up while the agent is working steers the
+  running OpenCode session in place. Slack's Stop button interrupts the session.
+- **Session inspection & titles:** New threads post an ephemeral `opencode --session '<id>'`
+  command for local inspection and automatically title the OpenCode session and Slack thread using
+  `OPENCODE_SMALL_MODEL`.
+- **Outcome reactions:** Reactions are only added on non-success outcomes: 🛑 when cancelled or ❌
+  on failure.
 
 **One thread, one session, one workspace.** Follow-ups keep the conversation history and code
 changes. A new top-level DM starts a separate thread.
@@ -30,17 +47,16 @@ changes. A new top-level DM starts a separate thread.
 ```text
 Slack                         OpenCode server
 Thread A ──────────────────── Session A + workspace A
-                              ├── repo-one/  (Git worktree)
-                              └── repo-two/  (Git worktree)
+                              ├── repo-one/  (Git worktree, provisioned on demand)
+                              └── repo-two/  (Git worktree, provisioned on demand)
 Thread B ──────────────────── Session B + workspace B
-                              ├── repo-one/  (Git worktree)
-                              └── repo-two/  (Git worktree)
+                              └── repo-one/  (Git worktree, provisioned on demand)
 ```
 
 ## How to make it more powerful
 
 Give the agent access to the tools you use to investigate problems. OpenCode v2 uses
-[Code Mode for MCP servers](https://opencode.ai/v2/docs/mcp-servers) by default, so agents can
+[Code Mode for MCP servers](https://opencode.ai/docs/mcp-servers) by default, so agents can
 discover and call tools without loading every tool's full schema into the context window up
 front. That makes MCPs a relatively cheap way to give the agent more capabilities.
 
@@ -79,9 +95,14 @@ local `main` branch. Other fetch errors remain fatal.
 ## How Thread Context Works
 
 The first mention sends every message except RemoteCode's own messages in the Slack thread to a new
-OpenCode session. Each later message sends only messages added since the previous turn. OpenCode
-retains its own assistant and tool history, so prior content is neither duplicated nor reordered
-and the model's prompt prefix remains cacheable.
+OpenCode session. Each later message (including mid-turn steers) sends only messages added since the
+previous turn. OpenCode retains its own assistant and tool history, so prior content is neither
+duplicated nor reordered and the model's prompt prefix remains cacheable.
+
+Thread transcripts include user timezones, forwarded message links, and image attachments
+(downloaded from Slack and attached to the OpenCode prompt). In Slack (and the local mock), the
+agent can also emit `spec` fenced code blocks rendered as native Block Kit cards (tables, charts,
+KPI fields, and link buttons) via `@json-render/chat`.
 
 No database is required. The active process caches thread state in memory. For restart recovery,
 the app finds generated `[slack]` sessions and matches the Slack thread and last imported message IDs
@@ -106,8 +127,10 @@ is addressed, whether its task is being continued, and whether someone else is t
 recipient. It requires the first and either the second or third (each at probability ≥ 0.7),
 and skips replies when the exclusive-other-recipient probability is ≥ 0.7. Evaluation errors or timeouts
 skip the reply and are logged. DMs bypass evaluation. Subscriptions are kept in memory, so
-after a restart, tag the app again to resume listening. Existing Slack apps must enable the
-`message.channels` and `message.groups` bot events from the manifest.
+after a restart, tag the app again to resume listening. Existing Slack apps should stay synced with
+[`slack-manifest.yaml`](./slack-manifest.yaml) — notably `agent_view`, the `assistant:write`,
+`files:read`, and `users:read` scopes, and the `agent_session_stopped`, `app_context_changed`,
+`app_home_opened`, `message.channels`, and `message.groups` bot events.
 
 DMs do not require a tag. A DM thread reply continues that thread's session; a new top-level DM
 starts a separate session.
@@ -166,5 +189,5 @@ all filesystem operations run through the OpenCode server.
 bun run typecheck
 bun run lint
 bun run format:check
-bun test
+bun run test
 ```
