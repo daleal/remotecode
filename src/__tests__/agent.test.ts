@@ -43,7 +43,9 @@ describe('Slack agent', () => {
         return { data: [...messages].reverse(), cursor: { next: 'next-page' } };
       });
       const client = {
-        generate: { text: vi.fn(async () => ({ text: 'Handle Slack requests' })) },
+        experimental: {
+          generate: { text: vi.fn(async () => ({ text: 'Handle Slack requests' })) },
+        },
         message: { list: listMessages },
         permission: {
           list: vi.fn(async () => [
@@ -143,7 +145,7 @@ describe('Slack agent', () => {
         },
       ]);
       expect(listMessages.mock.calls.some(([input]) => input.cursor === 'next-page')).toBe(true);
-      expect(client.generate.text).toHaveBeenCalledWith({
+      expect(client.experimental.generate.text).toHaveBeenCalledWith({
         model: { id: 'small-model', providerID: 'provider' },
         prompt: expect.stringContaining('You are a title generator.'),
       });
@@ -205,7 +207,7 @@ describe('Slack agent', () => {
     const messages: unknown[] = [];
     let waits = 0;
     const client = {
-      generate: { text: vi.fn(async () => ({ text: 'Background task' })) },
+      experimental: { generate: { text: vi.fn(async () => ({ text: 'Background task' })) } },
       message: {
         list: vi.fn(async () => ({ data: [...messages].reverse(), cursor: {} })),
       },
@@ -370,7 +372,7 @@ describe('Slack agent', () => {
       '```',
     ].join('\n');
     const client = {
-      generate: { text: vi.fn(async () => ({ text: 'Release v1.2' })) },
+      experimental: { generate: { text: vi.fn(async () => ({ text: 'Release v1.2' })) } },
       message: {
         list: vi.fn(async () => ({ cursor: {}, data: [...messages].reverse() })),
       },
@@ -437,7 +439,7 @@ describe('Slack agent', () => {
       '```',
     ].join('\n');
     const client = {
-      generate: { text: vi.fn(async () => ({ text: 'Release v1.2' })) },
+      experimental: { generate: { text: vi.fn(async () => ({ text: 'Release v1.2' })) } },
       message: {
         list: vi.fn(async () => ({ cursor: {}, data: [...messages].reverse() })),
       },
@@ -556,7 +558,7 @@ describe('Slack agent', () => {
           releaseWait();
         }),
       },
-      generate: { text: vi.fn(async () => ({ text: 'Test suite run' })) },
+      experimental: { generate: { text: vi.fn(async () => ({ text: 'Test suite run' })) } },
       message: {
         list: vi.fn(async () => ({
           cursor: {},
@@ -640,7 +642,7 @@ describe('Slack agent', () => {
     const messages: unknown[] = [];
 
     const client = {
-      generate: { text: vi.fn(async () => ({ text: 'Auth refactor' })) },
+      experimental: { generate: { text: vi.fn(async () => ({ text: 'Auth refactor' })) } },
       message: {
         list: vi.fn(async () => ({ cursor: {}, data: [...messages].reverse() })),
       },
@@ -740,7 +742,7 @@ describe('Slack agent', () => {
       firstPromptSent = resolve;
     });
     const client = {
-      generate: { text: vi.fn(async () => ({ text: 'Stopped' })) },
+      experimental: { generate: { text: vi.fn(async () => ({ text: 'Stopped' })) } },
       message: { list: vi.fn(async () => ({ cursor: {}, data: [] })) },
       permission: { list: vi.fn(async () => []), reply: vi.fn(async () => {}) },
       session: {
@@ -820,7 +822,7 @@ describe('Slack agent', () => {
       },
     );
     const client = {
-      generate: { text: vi.fn(async () => ({ text: 'Lazy workspace' })) },
+      experimental: { generate: { text: vi.fn(async () => ({ text: 'Lazy workspace' })) } },
       message: {
         list: vi.fn(async () => ({ cursor: {}, data: [...messages].reverse() })),
       },
@@ -962,7 +964,7 @@ describe('Slack agent', () => {
     );
 
     const client = {
-      generate: { text: vi.fn(async () => ({ text: 'Steer repos' })) },
+      experimental: { generate: { text: vi.fn(async () => ({ text: 'Steer repos' })) } },
       message: {
         list: vi.fn(async () => ({ cursor: {}, data: [...messages].reverse() })),
       },
@@ -1089,7 +1091,7 @@ describe('Slack agent', () => {
           }
         }),
       },
-      generate: { text: vi.fn(async () => ({ text: 'Multi-message' })) },
+      experimental: { generate: { text: vi.fn(async () => ({ text: 'Multi-message' })) } },
       message: {
         list: vi.fn(async () => ({
           cursor: {},
@@ -1265,7 +1267,7 @@ describe('Slack agent', () => {
           }
         }),
       },
-      generate: { text: vi.fn(async () => ({ text: 'PR babysit' })) },
+      experimental: { generate: { text: vi.fn(async () => ({ text: 'PR babysit' })) } },
       message: {
         list: vi.fn(async () => ({ cursor: {}, data: [...messages].reverse() })),
       },

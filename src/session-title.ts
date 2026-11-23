@@ -46,11 +46,15 @@ Your output must be:
 "@App.tsx add dark mode toggle" -> Dark mode toggle in App
 </examples>`;
 
+const RETRYABLE_GENERATE_ERROR_TAGS = new Set(['ModelNotFoundError', 'ProviderNotFoundError']);
+const DEFAULT_RETRY_DELAYS_MS = [500, 1000] as const;
+
 type GenerateAndApplySessionTitleOptions = {
   adapterName: string;
   client: OpenCodeClient;
   model: OpenCodeConfig['smallModel'];
   prompt: string;
+  retryDelaysMs?: readonly number[];
   sessionID: string;
 };
 
@@ -59,12 +63,15 @@ export const generateAndApplySessionTitle = async ({
   client,
   model,
   prompt,
+  retryDelaysMs = DEFAULT_RETRY_DELAYS_MS,
   sessionID,
 }: GenerateAndApplySessionTitleOptions) => {
   try {
-    const generated = await client.generate.text({
+    const generated = await generateTitleText({
+      client,
       model,
       prompt: `${TITLE_PROMPT}\n\n${prompt}`,
+      retryDelaysMs,
     });
     const generatedTitle = generated.text
       .split('\n')
@@ -81,3 +88,40 @@ export const generateAndApplySessionTitle = async ({
     return undefined;
   }
 };
+
+const generateTitleText = async ({
+  client,
+  model,
+  prompt,
+  retryDelaysMs,
+}: {
+  client: OpenCodeClient;
+  model: OpenCodeConfig['smallModel'];
+  prompt: string;
+  retryDelaysMs: readonly number[];
+}) => {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await client.experimental.generate.text({ model, prompt });
+    } catch (error) {
+      const delayMs = retryDelaysMs[attempt];
+      if (delayMs === undefined || !isRetryableGenerateError(error)) {
+        throw error;
+      }
+      await sleep(delayMs);
+    }
+  }
+};
+
+const isRetryableGenerateError = (error: unknown): boolean => {
+  if (!error || typeof error !== 'object') return false;
+  const tag = '_tag' in error ? error._tag : undefined;
+  if (typeof tag === 'string' && RETRYABLE_GENERATE_ERROR_TAGS.has(tag)) return true;
+  const name = 'name' in error ? error.name : undefined;
+  return typeof name === 'string' && RETRYABLE_GENERATE_ERROR_TAGS.has(name);
+};
+
+const sleep = (milliseconds: number) =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
