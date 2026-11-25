@@ -2252,4 +2252,325 @@ describe('Slack agent', () => {
     expect(adapter.assistantTitles).toEqual(['Agent session title']);
     expect(legacySetTitle).not.toHaveBeenCalled();
   });
+
+  it('uploads local files embedded in non-streaming responses and strips their syntax from markdown', async () => {
+    const messages: unknown[] = [];
+    const readFile = vi.fn(
+      async (input: { location?: { directory?: string }; path: string }): Promise<Uint8Array> => {
+        if (input.location?.directory === '/tmp/opencode' && input.path === 'flighty.png') {
+          return new Uint8Array([137, 80, 78, 71]);
+        }
+        if (input.location?.directory === '/tmp/opencode' && input.path === 'summary.pdf') {
+          return new Uint8Array([37, 80, 68, 70]);
+        }
+        throw new Error('not found');
+      },
+    );
+    const client = {
+      experimental: { generate: { text: vi.fn(async () => ({ text: 'Share files' })) } },
+      file: { read: readFile },
+      message: {
+        list: vi.fn(async () => ({ cursor: {}, data: [...messages].reverse() })),
+      },
+      permission: { list: vi.fn(async () => []), reply: vi.fn(async () => {}) },
+      session: {
+        create: vi.fn(async () => ({ id: 'session-files' })),
+        list: vi.fn(async () => ({ cursor: {}, data: [] })),
+        prompt: vi.fn(async (input: { metadata?: Record<string, unknown> }) => {
+          messages.push(
+            { id: 'user-1', metadata: input.metadata, type: 'user' },
+            {
+              content: [
+                {
+                  text: [
+                    'Aquí está el screenshot y el PDF:',
+                    '',
+                    '![Flighty](/tmp/opencode/flighty.png)',
+                    '',
+                    '![Summary](/tmp/opencode/summary.pdf)',
+                  ].join('\n'),
+                  type: 'text',
+                },
+              ],
+              id: 'asst-1',
+              type: 'assistant',
+            },
+          );
+        }),
+        update: vi.fn(async () => {}),
+        wait: vi.fn(async () => {}),
+      },
+    } as unknown as OpenCodeClient;
+
+    const adapter = new MockAdapter('remotecode');
+    const bot = createAgent({
+      adapters: { mock: adapter },
+      allowedUsers: ['local-user'],
+      config: {
+        agent: 'build',
+        model: { id: 'model', providerID: 'provider', variant: 'high' },
+        reposRoot: '/tmp',
+        smallModel: { id: 'small-model', providerID: 'provider' },
+        workspaceRoot: '/tmp/workspaces',
+      },
+      openCode: client,
+      state: createMemoryState(),
+      userName: 'remotecode',
+      ...staticWorkspace,
+    });
+    bots.push(bot);
+    await bot.initialize();
+
+    await adapter.receive('files-nonstream', 'mándame la foto y el pdf');
+
+    expect(adapter.outputs).toEqual(['Aquí está el screenshot y el PDF:']);
+    expect(adapter.files).toEqual([
+      { data: Buffer.from([137, 80, 78, 71]), filename: 'flighty.png' },
+      { data: Buffer.from([37, 80, 68, 70]), filename: 'summary.pdf' },
+    ]);
+    expect(readFile).toHaveBeenCalledTimes(2);
+  });
+
+  it('streams prose cleanly and uploads embedded local files natively when a streamed message ends', async () => {
+    const pendingEvents: unknown[] = [];
+    let notifyEvent: (() => void) | undefined;
+    let eventsDone = false;
+    const pushEvent = (event: unknown) => {
+      pendingEvents.push(event);
+      notifyEvent?.();
+      notifyEvent = undefined;
+    };
+
+    const messages: unknown[] = [];
+    let releaseWait!: () => void;
+    let waitStarted!: () => void;
+    const waitReady = new Promise<void>((resolve) => {
+      waitStarted = resolve;
+    });
+    const readFile = vi.fn(async () => new Uint8Array([1, 2, 3, 4]));
+
+    const client = {
+      event: {
+        subscribe: vi.fn(async function* () {
+          while (!eventsDone || pendingEvents.length > 0) {
+            if (pendingEvents.length === 0) {
+              await new Promise<void>((resolve) => {
+                notifyEvent = resolve;
+              });
+              continue;
+            }
+            yield pendingEvents.shift();
+          }
+        }),
+      },
+      experimental: { generate: { text: vi.fn(async () => ({ text: 'Streamed image' })) } },
+      file: { read: readFile },
+      message: {
+        list: vi.fn(async () => ({ cursor: {}, data: [...messages].reverse() })),
+      },
+      permission: { list: vi.fn(async () => []), reply: vi.fn(async () => {}) },
+      session: {
+        create: vi.fn(async () => ({ id: 'session-stream-file' })),
+        list: vi.fn(async () => ({ cursor: {}, data: [] })),
+        prompt: vi.fn(async (input: { metadata?: Record<string, unknown> }) => {
+          messages.push({ id: 'user-1', metadata: input.metadata, type: 'user' });
+        }),
+        update: vi.fn(async () => {}),
+        wait: vi.fn(async () => {
+          waitStarted();
+          await new Promise<void>((resolve) => {
+            releaseWait = resolve;
+          });
+        }),
+      },
+    } as unknown as OpenCodeClient;
+
+    const adapter = new MockAdapter('remotecode');
+    const bot = createAgent({
+      adapters: { mock: adapter },
+      allowedUsers: ['local-user'],
+      config: {
+        agent: 'build',
+        model: { id: 'model', providerID: 'provider', variant: 'high' },
+        reposRoot: '/tmp',
+        smallModel: { id: 'small-model', providerID: 'provider' },
+        workspaceRoot: '/tmp/workspaces',
+      },
+      openCode: client,
+      state: createMemoryState(),
+      userName: 'remotecode',
+      ...staticWorkspace,
+    });
+    bots.push(bot);
+    await bot.initialize();
+
+    const turn = adapter.receive('stream-file', 'mándame el screenshot');
+    await waitReady;
+
+    const fullText = 'Listo, aquí va:\n\n![Flighty](/tmp/opencode/flighty.png)\n';
+    messages.push({
+      content: [{ text: fullText, type: 'text' }],
+      id: 'asst-stream-1',
+      type: 'assistant',
+    });
+    for (let index = 0; index < fullText.length; index += 6) {
+      pushEvent({
+        data: {
+          assistantMessageID: 'asst-stream-1',
+          delta: fullText.slice(index, index + 6),
+          ordinal: 0,
+          sessionID: 'session-stream-file',
+        },
+        type: 'session.text.delta',
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    releaseWait();
+    eventsDone = true;
+    notifyEvent?.();
+    await turn;
+
+    expect(adapter.outputs).toEqual(['Listo, aquí va:']);
+    expect(adapter.files).toEqual([{ data: Buffer.from([1, 2, 3, 4]), filename: 'flighty.png' }]);
+    expect(readFile).toHaveBeenCalledWith({
+      location: { directory: '/tmp/opencode' },
+      path: 'flighty.png',
+    });
+  });
+
+  it('uploads file-only streamed replies without posting an empty text message and falls back if unreadable', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const pendingEvents: unknown[] = [];
+    let notifyEvent: (() => void) | undefined;
+    let eventsDone = false;
+    const pushEvent = (event: unknown) => {
+      pendingEvents.push(event);
+      notifyEvent?.();
+      notifyEvent = undefined;
+    };
+
+    const messages: unknown[] = [];
+    let releaseWait!: () => void;
+    let waitStarted!: () => void;
+    const nextWait = () =>
+      new Promise<void>((resolve) => {
+        waitStarted = resolve;
+      });
+    const readFile = vi.fn(
+      async (input: { location?: { directory?: string }; path: string }): Promise<Uint8Array> => {
+        if (input.path === 'only.png') return new Uint8Array([9, 8, 7]);
+        throw new Error('ENOENT');
+      },
+    );
+
+    const client = {
+      event: {
+        subscribe: vi.fn(async function* () {
+          while (!eventsDone || pendingEvents.length > 0) {
+            if (pendingEvents.length === 0) {
+              await new Promise<void>((resolve) => {
+                notifyEvent = resolve;
+              });
+              continue;
+            }
+            yield pendingEvents.shift();
+          }
+        }),
+      },
+      experimental: { generate: { text: vi.fn(async () => ({ text: 'File only' })) } },
+      file: { read: readFile },
+      message: {
+        list: vi.fn(async () => ({ cursor: {}, data: [...messages].reverse() })),
+      },
+      permission: { list: vi.fn(async () => []), reply: vi.fn(async () => {}) },
+      session: {
+        create: vi.fn(async () => ({ id: 'session-file-only' })),
+        list: vi.fn(async () => ({ cursor: {}, data: [] })),
+        prompt: vi.fn(async (input: { metadata?: Record<string, unknown> }) => {
+          messages.push({ id: `user-${messages.length}`, metadata: input.metadata, type: 'user' });
+        }),
+        update: vi.fn(async () => {}),
+        wait: vi.fn(async () => {
+          waitStarted();
+          await new Promise<void>((resolve) => {
+            releaseWait = resolve;
+          });
+        }),
+      },
+    } as unknown as OpenCodeClient;
+
+    const adapter = new MockAdapter('remotecode');
+    const bot = createAgent({
+      adapters: { mock: adapter },
+      allowedUsers: ['local-user'],
+      config: {
+        agent: 'build',
+        model: { id: 'model', providerID: 'provider', variant: 'high' },
+        reposRoot: '/tmp',
+        smallModel: { id: 'small-model', providerID: 'provider' },
+        workspaceRoot: '/tmp/workspaces',
+      },
+      openCode: client,
+      state: createMemoryState(),
+      userName: 'remotecode',
+      ...staticWorkspace,
+    });
+    bots.push(bot);
+    await bot.initialize();
+
+    // Turn 1: readable file-only reply -> uploads file, zero text messages posted.
+    let waitReady = nextWait();
+    const turn1 = adapter.receive('file-only', 'foto');
+    await waitReady;
+    const onlyText = '![Only](/tmp/opencode/only.png)';
+    messages.push({
+      content: [{ text: onlyText, type: 'text' }],
+      id: 'asst-only-1',
+      type: 'assistant',
+    });
+    pushEvent({
+      data: {
+        assistantMessageID: 'asst-only-1',
+        delta: onlyText,
+        ordinal: 0,
+        sessionID: 'session-file-only',
+      },
+      type: 'session.text.delta',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    releaseWait();
+    await turn1;
+
+    expect(adapter.outputs).toEqual([]);
+    expect(adapter.files).toEqual([{ data: Buffer.from([9, 8, 7]), filename: 'only.png' }]);
+
+    // Turn 2: missing file-only reply -> falls back to markdown and reads only once.
+    waitReady = nextWait();
+    const turn2 = adapter.receive('file-only', 'otra foto');
+    await waitReady;
+    const missingText = '![Missing](/tmp/opencode/missing.png)';
+    messages.push({
+      content: [{ text: missingText, type: 'text' }],
+      id: 'asst-only-2',
+      type: 'assistant',
+    });
+    pushEvent({
+      data: {
+        assistantMessageID: 'asst-only-2',
+        delta: missingText,
+        ordinal: 0,
+        sessionID: 'session-file-only',
+      },
+      type: 'session.text.delta',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    releaseWait();
+    eventsDone = true;
+    notifyEvent?.();
+    await turn2;
+
+    expect(adapter.outputs).toEqual([missingText]);
+    expect(readFile).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
+  });
 });

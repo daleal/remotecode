@@ -9,6 +9,7 @@ import {
   type ChatInstance,
   type EphemeralMessage,
   type FetchOptions,
+  type FileUpload,
   type FormattedContent,
   type RawMessage,
   type StreamChunk,
@@ -38,6 +39,7 @@ export class MockAdapter implements Adapter<MockThreadID, MockRawMessage> {
   readonly assistantTitles: string[] = [];
   readonly cards: CardElement[] = [];
   readonly ephemeralOutputs: Array<{ text: string; userId: string }> = [];
+  readonly files: FileUpload[] = [];
   readonly outputs: string[] = [];
   readonly reactions: Array<{ emoji: string; messageId: string }> = [];
   readonly removedReactions: Array<{ emoji: string; messageId: string }> = [];
@@ -133,9 +135,22 @@ export class MockAdapter implements Adapter<MockThreadID, MockRawMessage> {
   }
 
   async postMessage(threadId: string, post: AdapterPostableMessage) {
+    const files = extractFiles(post);
+    if (files.length > 0) this.files.push(...files);
     const card = extractCard(post);
     if (card) this.cards.push(card);
-    const message = this.makeMessage(threadId, postableText(post), true);
+    const text = postableText(post);
+    if (!text && !card && files.length > 0) {
+      const summary = files.map((file) => `[file: ${file.filename}]`).join(' ');
+      console.log(`\n${this.userName}: ${summary}\n`);
+      const id = `file-${++this.counter}`;
+      return {
+        id,
+        raw: this.makeMessage(threadId, '', true, id).raw,
+        threadId,
+      };
+    }
+    const message = this.makeMessage(threadId, text, true);
     this.messages(threadId).push(message);
     this.outputs.push(message.text);
     console.log(`\n${this.userName}: ${message.text}\n`);
@@ -241,6 +256,13 @@ const extractCard = (post: AdapterPostableMessage): CardElement | undefined => {
   if ('type' in post && post.type === 'card') return post;
   if ('card' in post && post.card) return post.card;
   return undefined;
+};
+
+const extractFiles = (post: AdapterPostableMessage): FileUpload[] => {
+  if (!post || typeof post !== 'object' || !('files' in post) || !Array.isArray(post.files)) {
+    return [];
+  }
+  return post.files;
 };
 
 const renderCardChild = (child: CardChild): string | undefined => {

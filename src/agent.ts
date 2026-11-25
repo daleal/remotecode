@@ -9,6 +9,14 @@ import {
 } from 'chat';
 import type { OpenCodeConfig } from './opencode';
 import { selectRepositories } from './repo-selector';
+import {
+  createRemoteFileReader,
+  extractLocalFileEmbeds,
+  loadFileUploads,
+  LocalFileStreamFilter,
+  type LocalFileEmbed,
+  type ReadRemoteFile,
+} from './response-files';
 import { generateAndApplySessionTitle } from './session-title';
 import {
   inspectAutonomousTurn,
@@ -277,6 +285,7 @@ export const createAgent = (options: CreateAgentOptions) => {
   const shutdownAbort = new AbortController();
   const initWorkspace = options.initWorkspace ?? initThreadWorkspace;
   const provisionRepos = options.provisionRepos ?? provisionWorkspaceRepos;
+  const readFile = createRemoteFileReader(options.openCode);
   const selectRepos = options.selectRepos ?? selectRepositories;
 
   const trackAutonomousTask = (task: Promise<void>) => {
@@ -409,6 +418,7 @@ export const createAgent = (options: CreateAgentOptions) => {
       onMessagePosted: (messageID) => {
         void trackAutonomousTask(syncAutomationReaction(thread, sessionID, messageID));
       },
+      readFile,
       thread,
       uiAdapters: options.uiAdapters,
     });
@@ -704,6 +714,7 @@ export const createAgent = (options: CreateAgentOptions) => {
         if (!turnSessionID) return;
         void trackAutonomousTask(syncAutomationReaction(thread, turnSessionID, messageID));
       },
+      readFile,
       thread,
       uiAdapters: options.uiAdapters,
     });
@@ -1048,18 +1059,68 @@ const postResponse = async (
   thread: Thread<ThreadState>,
   response: string,
   uiAdapters?: readonly string[],
+  readFile?: ReadRemoteFile,
 ) => {
   if (!supportsUI(thread.adapter.name, uiAdapters)) {
-    const sent = await thread.post({ markdown: response });
-    return sent?.id;
+    if (!readFile) {
+      const sent = await thread.post({ markdown: response });
+      return sent?.id;
+    }
+
+    const { files, markdown } = extractLocalFileEmbeds(response);
+    const uploads = files.length > 0 ? await loadFileUploads(files, readFile) : [];
+    let lastMessageID: string | undefined;
+    if (markdown) {
+      const sent = await thread.post({ markdown });
+      if (sent?.id) lastMessageID = sent.id;
+    }
+    if (uploads.length > 0) {
+      await thread.post({ files: uploads, raw: '' });
+    }
+    if (!markdown && uploads.length === 0) {
+      const sent = await thread.post({ markdown: response });
+      if (sent?.id) lastMessageID = sent.id;
+    }
+    return lastMessageID;
   }
 
   let lastMessageID: string | undefined;
+  let postedAny = false;
+  const pendingFiles: LocalFileEmbed[] = [];
+
   for (const part of parseResponseParts(response)) {
-    const sent =
-      part.type === 'card'
-        ? await thread.post(part.card)
-        : await thread.post({ markdown: part.markdown });
+    if (part.type === 'card') {
+      const sent = await thread.post(part.card);
+      if (sent?.id) lastMessageID = sent.id;
+      postedAny = true;
+      continue;
+    }
+
+    if (!readFile) {
+      const sent = await thread.post({ markdown: part.markdown });
+      if (sent?.id) lastMessageID = sent.id;
+      postedAny = true;
+      continue;
+    }
+
+    const { files, markdown } = extractLocalFileEmbeds(part.markdown);
+    pendingFiles.push(...files);
+    if (markdown) {
+      const sent = await thread.post({ markdown });
+      if (sent?.id) lastMessageID = sent.id;
+      postedAny = true;
+    }
+  }
+
+  const uploads =
+    pendingFiles.length > 0 && readFile ? await loadFileUploads(pendingFiles, readFile) : [];
+  if (uploads.length > 0) {
+    await thread.post({ files: uploads, raw: '' });
+    postedAny = true;
+  }
+
+  if (!postedAny) {
+    const sent = await thread.post({ markdown: response });
     if (sent?.id) lastMessageID = sent.id;
   }
   return lastMessageID;
@@ -1069,20 +1130,25 @@ const STATUS_KEEPALIVE_MS = 90_000;
 
 type MessageStream = {
   chunkQueue: AsyncQueue<StreamChunk>;
+  fileFilter: LocalFileStreamFilter;
   specFilter: SpecStreamFilter;
   started: boolean;
 };
 
 const createTurnMessenger = ({
   onMessagePosted,
+  readFile,
   thread,
   uiAdapters,
 }: {
   onMessagePosted?: (messageID: string) => void;
+  readFile?: ReadRemoteFile;
   thread: Thread<ThreadState>;
   uiAdapters?: readonly string[];
 }) => {
+  const filesEnabled = Boolean(readFile);
   const uiEnabled = supportsUI(thread.adapter.name, uiAdapters);
+  let attemptedStreamFileUpload = false;
   let currentMessage: MessageStream | undefined;
   let desiredStatus: string | undefined;
   let hasActiveTypingStatus = false;
@@ -1162,6 +1228,7 @@ const createTurnMessenger = ({
     if (currentMessage) return currentMessage;
     const message: MessageStream = {
       chunkQueue: new AsyncQueue<StreamChunk>(),
+      fileFilter: new LocalFileStreamFilter({ enabled: filesEnabled }),
       specFilter: new SpecStreamFilter({
         enabled: uiEnabled,
         onSpecStart: () => {
@@ -1192,11 +1259,21 @@ const createTurnMessenger = ({
     message.chunkQueue.push(chunk);
   };
 
+  const pushFilteredChunk = (message: MessageStream, chunk: StreamChunk) => {
+    if (chunk.type === 'markdown_text') {
+      for (const out of message.fileFilter.push(chunk.text)) {
+        pushToStream(message, out);
+      }
+      return;
+    }
+    pushToStream(message, chunk);
+  };
+
   const emitChunk = (chunk: StreamChunk) => {
     const message = ensureCurrentMessage();
     if (chunk.type === 'markdown_text') {
       for (const filtered of message.specFilter.push(chunk.text)) {
-        pushToStream(message, filtered);
+        pushFilteredChunk(message, filtered);
       }
       return;
     }
@@ -1208,8 +1285,12 @@ const createTurnMessenger = ({
     if (!message) return;
     currentMessage = undefined;
 
-    const { cards, chunks } = message.specFilter.finish();
-    for (const chunk of chunks) {
+    const { cards, chunks: specChunks } = message.specFilter.finish();
+    for (const chunk of specChunks) {
+      pushFilteredChunk(message, chunk);
+    }
+    const { chunks: fileChunks, files } = message.fileFilter.finish();
+    for (const chunk of fileChunks) {
       pushToStream(message, chunk);
     }
     if (message.started) {
@@ -1230,6 +1311,21 @@ const createTurnMessenger = ({
         hasActiveTypingStatus = false;
       });
     }
+    if (files.length > 0 && readFile) {
+      attemptedStreamFileUpload = true;
+      if (!message.started && cards.length === 0) {
+        void setStatus(files.length === 1 ? 'Uploading file...' : 'Uploading files...');
+      }
+      statusDirty = true;
+      stopKeepalive();
+      enqueuePost(async () => {
+        const uploads = await loadFileUploads(files, readFile);
+        if (uploads.length === 0) return;
+        postedAnyMessage = true;
+        await thread.post({ files: uploads, raw: '' });
+        hasActiveTypingStatus = false;
+      });
+    }
   };
 
   const finish = async (response: string) => {
@@ -1239,7 +1335,12 @@ const createTurnMessenger = ({
     await postChain;
     if (streamError !== undefined) throw streamError;
     if (!postedAnyMessage) {
-      const sentID = await postResponse(thread, response, uiAdapters);
+      const sentID = await postResponse(
+        thread,
+        response,
+        uiAdapters,
+        attemptedStreamFileUpload ? undefined : readFile,
+      );
       if (sentID) {
         lastPostedMessageID = sentID;
         onMessagePosted?.(sentID);

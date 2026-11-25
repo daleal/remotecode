@@ -111,6 +111,9 @@ describe('buildThreadPrompt', () => {
     });
 
     expect(prompt.startsWith('<slack>\nYou are working from a slack thread.')).toBe(true);
+    expect(prompt).toContain('![description](/absolute/path/to/file.ext)');
+    expect(prompt).toContain('refer to them by filename in your prose');
+    expect(prompt).toContain('Do not use external chat/Slack MCP tools');
     expect(prompt).toContain('starts with one of these prefixes: <slack>.');
     expect(prompt).toContain('```spec');
     expect(prompt).toContain(

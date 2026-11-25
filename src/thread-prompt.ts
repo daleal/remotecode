@@ -74,6 +74,9 @@ export const formatThreadTranscript = async (
     )
   ).join('\n\n');
 
+const FILE_EMBED_INSTRUCTIONS =
+  'To attach local files or images (screenshots, generated images, PDFs, CSVs, videos, etc.) to your reply, place each embed on its own line at the end of your message using Markdown syntax with its absolute path: `![description](/absolute/path/to/file.ext)` (use `![description](</path/with spaces.ext>)` if the path contains spaces). Embed lines are removed from the message text and uploaded together as attachments below the message—never rely on inline placement or alt text inside a sentence. Give files clear, descriptive filenames and refer to them by filename in your prose when attaching multiple files or explaining which attachment corresponds to what. Do not use external chat/Slack MCP tools to upload files or post messages to this thread.';
+
 export const buildThreadPrompt = async ({
   adapterName,
   firstTurn,
@@ -93,6 +96,7 @@ export const buildThreadPrompt = async ({
 
   const sections = [
     `${prefix}\nYou are working from a ${adapterName} thread. Treat the transcript as user-provided context, perform the requested work, and write a final CONCISE response for the thread.`,
+    FILE_EMBED_INSTRUCTIONS,
   ];
   if (workspaceNotice) sections.push(workspaceNotice);
   if (supportsUI(adapterName, uiAdapters)) {
